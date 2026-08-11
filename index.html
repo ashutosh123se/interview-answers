@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#0f172a" />
+  <title>Interview Assistant</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header>
+      <div class="header-left">
+        <h1>Interview Assistant</h1>
+        <span id="server-badge" class="badge checking">Checking…</span>
+      </div>
+      <button id="settings-btn" class="icon-btn" aria-label="Settings">⚙️</button>
+    </header>
+
+    <main>
+      <section id="status-bar" class="status idle">
+        <span id="status-dot"></span>
+        <span id="status-text">Tap START to begin</span>
+      </section>
+
+      <section id="heard-panel" class="panel">
+        <h2>Question heard</h2>
+        <p id="transcript" class="transcript empty">Waiting for speech…</p>
+      </section>
+
+      <section id="answer-panel" class="panel answer-panel">
+        <h2>Answer</h2>
+        <div id="answer" class="answer empty">Your answer will appear here automatically.</div>
+      </section>
+
+      <section id="controls">
+        <button id="listen-btn" class="btn hero primary" disabled>
+          <span class="btn-icon">▶</span>
+          <span class="btn-label">START — Hear &amp; Answer</span>
+        </button>
+        <button id="ask-btn" class="btn secondary" disabled>Send Now</button>
+      </section>
+    </main>
+
+    <div id="settings-overlay" class="overlay hidden">
+      <div class="settings-sheet">
+        <div class="settings-header">
+          <h2>Settings</h2>
+          <button id="close-settings" class="icon-btn">✕</button>
+        </div>
+
+        <p class="info-box">API key is stored on your <strong>laptop</strong> in the <code>.env</code> file — not on your phone.</p>
+
+        <label for="model">Model</label>
+        <select id="model">
+          <option value="gpt-4o-mini">gpt-4o-mini (fastest)</option>
+          <option value="gpt-4o">gpt-4o (smarter)</option>
+        </select>
+
+        <label for="context">Your background (optional)</label>
+        <textarea id="context" rows="4" placeholder="Job role, skills, projects — helps personalize answers"></textarea>
+
+        <label for="silence-ms">Auto-send after silence (ms) — lower = faster</label>
+        <input type="number" id="silence-ms" value="900" min="400" max="3000" step="100" />
+
+        <button id="save-settings" class="btn primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
