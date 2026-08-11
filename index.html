@@ -17,7 +17,7 @@
     }
     .mode-btns { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
     .mode-btns button {
-      flex: 1; min-width: 130px; padding: 10px; border-radius: 10px;
+      flex: 1; min-width: 120px; padding: 10px; border-radius: 10px;
       border: 1px solid var(--border); background: var(--surface);
       color: var(--text); cursor: pointer; font-size: 0.85rem;
     }
@@ -31,6 +31,10 @@
     .audio-bad { color: var(--danger); }
     .answer { font-size: 1rem; }
     main { max-width: 900px; margin: 0 auto; width: 100%; }
+    #debug-log {
+      font-size: 0.75rem; color: var(--muted); font-family: monospace;
+      max-height: 80px; overflow-y: auto; line-height: 1.4;
+    }
   </style>
 </head>
 <body>
@@ -46,8 +50,8 @@
     </header>
 
     <div class="hero-box">
-      Runs on your <strong>laptop only</strong>. Join interview in Chrome, click START, share Meet/Zoom tab with
-      <strong>tab audio ON</strong>. This page hears the interviewer and shows detailed answers here.
+      <strong>Best mode: Laptop Mic</strong> — plays interview on laptop speaker, mic hears it (works every time).<br>
+      <strong>Tab mode:</strong> share Meet/Zoom Chrome tab with <strong>Share tab audio</strong> checked.
     </div>
 
     <main>
@@ -56,7 +60,7 @@
         <div class="status-body">
           <span id="status-text">Click START to begin</span>
           <div id="mic-meter" class="mic-meter hidden">
-            <span class="mic-label">Audio</span>
+            <span class="mic-label">Level</span>
             <div class="mic-track"><div id="mic-level" class="mic-fill"></div></div>
             <span id="audio-hint" class="mic-label"></span>
           </div>
@@ -64,30 +68,35 @@
       </section>
 
       <section class="panel">
-        <h2>Audio source</h2>
+        <h2>How to hear the interview</h2>
         <div class="mode-btns">
-          <button type="button" id="mode-tab" class="active">Meet / Zoom Tab</button>
+          <button type="button" id="mode-mic" class="active">Laptop Mic ★ Best</button>
+          <button type="button" id="mode-tab">Meet/Zoom Tab</button>
           <button type="button" id="mode-screen">Entire Screen</button>
-          <button type="button" id="mode-mic">Laptop Mic</button>
         </div>
       </section>
 
       <section class="panel">
         <h2>Interviewer said</h2>
-        <p id="transcript" class="transcript empty">Waiting for interview audio…</p>
+        <p id="transcript" class="transcript empty">Words appear here as they are heard…</p>
       </section>
 
       <section class="panel answer-panel">
         <h2>Detailed answer</h2>
-        <div id="answer" class="answer empty">Detailed answer will appear here automatically.</div>
+        <div id="answer" class="answer empty">Detailed answer appears here…</div>
+      </section>
+
+      <section class="panel">
+        <h2>Status log</h2>
+        <div id="debug-log">Ready.</div>
       </section>
 
       <section id="controls">
         <button id="start-btn" class="btn hero primary" disabled>
           <span class="btn-icon">▶</span>
-          <span class="btn-label">START — Listen & Answer</span>
+          <span class="btn-label">START</span>
         </button>
-        <button id="force-btn" class="btn secondary" disabled>Process Now</button>
+        <button id="force-btn" class="btn secondary" disabled>Get Answer Now</button>
       </section>
     </main>
 
@@ -97,19 +106,17 @@
           <h2>Settings</h2>
           <button id="close-settings" class="icon-btn">✕</button>
         </div>
-        <p class="info-box">Add <code>OPENAI_API_KEY</code> in Vercel env vars or local <code>.env</code> file.</p>
         <label for="model">AI Model</label>
         <select id="model">
           <option value="gpt-4o-mini">gpt-4o-mini (fast)</option>
-          <option value="gpt-4o">gpt-4o (best quality)</option>
+          <option value="gpt-4o">gpt-4o (best)</option>
         </select>
-        <label for="context">Your background (job role, skills, projects)</label>
-        <textarea id="context" rows="5" placeholder="e.g. React developer, 2 years exp, worked on e-commerce app with Redux, Node.js…"></textarea>
+        <label for="context">Your background</label>
+        <textarea id="context" rows="5" placeholder="Job role, skills, projects…"></textarea>
         <button id="save-settings" class="btn primary">Save</button>
       </div>
     </div>
   </div>
-
   <script src="app.js"></script>
 </body>
 </html>

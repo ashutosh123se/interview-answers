@@ -2,9 +2,8 @@
   "use strict";
 
   const STORAGE_KEY = "interview_assistant_settings";
-  const SILENCE_MS = 2400;
-  const MIN_RMS = 0.008;
-  const MIN_SAMPLES = 16000 * 2;
+  const RECORD_EVERY_MS = 7000;
+  const MIN_BLOB = 1500;
 
   const $ = (id) => document.getElementById(id);
 
@@ -17,6 +16,7 @@
     audioHint: $("audio-hint"),
     transcript: $("transcript"),
     answer: $("answer"),
+    debugLog: $("debug-log"),
     startBtn: $("start-btn"),
     forceBtn: $("force-btn"),
     hiddenVideo: $("hidden-video"),
@@ -32,44 +32,46 @@
   };
 
   let settings = loadSettings();
-  let captureMode = "tab";
-  let displayStream = null;
-  let audioContext = null;
-  let processor = null;
+  let captureMode = "mic";
   let isRunning = false;
   let isProcessing = false;
-  let fullTranscript = "";
-  let lastAnswered = "";
-  let sampleBuffer = [];
-  let lastSoundAt = 0;
-  let flushTimer = null;
-  let meterTimer = null;
-  let currentRms = 0;
   let serverReady = false;
+  let fullTranscript = "";
+  let interimText = "";
+  let lastAnswered = "";
+  let pendingQueue = false;
+
+  let mediaStream = null;
+  let mediaRecorder = null;
+  let recognition = null;
+  let audioContext = null;
+  let analyser = null;
+  let meterTimer = null;
+  let currentLevel = 0;
+  let speechSilenceTimer = null;
 
   function loadSettings() {
     try {
-      return { ...defaultSettings(), ...JSON.parse(localStorage.getItem(STORAGE_KEY)) };
+      return { ...{ model: "gpt-4o-mini", context: "" }, ...JSON.parse(localStorage.getItem(STORAGE_KEY)) };
     } catch {
-      return defaultSettings();
+      return { model: "gpt-4o-mini", context: "" };
     }
   }
 
-  function defaultSettings() {
-    return { model: "gpt-4o-mini", context: "" };
-  }
-
   function saveSettingsToStorage() {
-    settings = {
-      model: els.model.value,
-      context: els.context.value.trim(),
-    };
+    settings = { model: els.model.value, context: els.context.value.trim() };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
   }
 
   function applySettingsToForm() {
     els.model.value = settings.model || "gpt-4o-mini";
     els.context.value = settings.context || "";
+  }
+
+  function log(msg) {
+    const t = new Date().toLocaleTimeString();
+    els.debugLog.textContent = `[${t}] ${msg}\n` + els.debugLog.textContent.slice(0, 800);
+    console.log(msg);
   }
 
   function setStatus(mode, text) {
@@ -79,127 +81,105 @@
 
   function setMode(mode) {
     captureMode = mode;
+    els.modeMic.classList.toggle("active", mode === "mic");
     els.modeTab.classList.toggle("active", mode === "tab");
     els.modeScreen.classList.toggle("active", mode === "screen");
-    els.modeMic.classList.toggle("active", mode === "mic");
   }
 
-  function updateMeter(rms) {
-    currentRms = rms;
-    const pct = Math.min(100, Math.round((rms / 0.08) * 100));
+  function showTranscript() {
+    const text = (fullTranscript + " " + interimText).trim();
+    els.transcript.textContent = text || "Listening…";
+    els.transcript.classList.toggle("empty", !text);
+  }
+
+  function updateMeter(level) {
+    currentLevel = level;
+    const pct = Math.min(100, Math.round(level * 100));
     els.micLevel.style.width = pct + "%";
-    els.micLevel.classList.toggle("loud", rms > MIN_RMS);
-    if (rms > MIN_RMS) {
-      els.audioHint.textContent = "✓ Hearing audio";
-      els.audioHint.className = "mic-label audio-ok";
-    } else {
-      els.audioHint.textContent = "No audio yet";
-      els.audioHint.className = "mic-label audio-bad";
-    }
+    els.micLevel.classList.toggle("loud", level > 0.02);
+    els.audioHint.textContent = level > 0.02 ? "✓ Audio detected" : "Waiting for sound…";
+    els.audioHint.className = "mic-label " + (level > 0.02 ? "audio-ok" : "audio-bad");
   }
 
-  function encodeWav(samples, sampleRate) {
-    const numSamples = samples.length;
-    const buffer = new ArrayBuffer(44 + numSamples * 2);
-    const view = new DataView(buffer);
-
-    function writeStr(offset, str) {
-      for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
-    }
-
-    writeStr(0, "RIFF");
-    view.setUint32(4, 36 + numSamples * 2, true);
-    writeStr(8, "WAVE");
-    writeStr(12, "fmt ");
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, 1, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * 2, true);
-    view.setUint16(32, 2, true);
-    view.setUint16(34, 16, true);
-    writeStr(36, "data");
-    view.setUint32(40, numSamples * 2, true);
-
-    let offset = 44;
-    for (let i = 0; i < numSamples; i++) {
-      const s = Math.max(-1, Math.min(1, samples[i]));
-      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-      offset += 2;
-    }
-    return new Blob([buffer], { type: "audio/wav" });
+  function startMeter(stream) {
+    audioContext = new AudioContext();
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 512;
+    audioContext.createMediaStreamSource(stream).connect(analyser);
+    els.micMeter.classList.remove("hidden");
+    meterTimer = setInterval(() => {
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      analyser.getByteFrequencyData(data);
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) sum += data[i];
+      updateMeter(sum / data.length / 255);
+    }, 150);
   }
 
-  function mergeSamples(chunks) {
-    let total = 0;
-    for (const c of chunks) total += c.length;
-    const out = new Float32Array(total);
-    let pos = 0;
-    for (const c of chunks) {
-      out.set(c, pos);
-      pos += c.length;
-    }
-    return out;
+  function stopMeter() {
+    if (meterTimer) clearInterval(meterTimer);
+    meterTimer = null;
+    if (audioContext) audioContext.close().catch(() => {});
+    audioContext = null;
+    analyser = null;
+    els.micMeter.classList.add("hidden");
   }
 
   async function checkServer() {
-    els.badge.className = "badge checking";
-    els.badge.textContent = "Checking…";
-    els.startBtn.disabled = true;
-
     try {
       const res = await fetch("/api/health");
       const data = await res.json();
       if (!data.apiConfigured) {
-        serverReady = false;
         els.badge.className = "badge error";
         els.badge.textContent = "No API key";
-        setStatus("error", "Add OPENAI_API_KEY to .env or Vercel settings");
+        setStatus("error", "Add OPENAI_API_KEY in Vercel or .env");
         return;
       }
       serverReady = true;
       els.badge.className = "badge ready";
       els.badge.textContent = "Ready";
       els.startBtn.disabled = false;
-      setStatus("idle", "Click START → share Meet/Zoom tab with audio ON");
-    } catch {
-      serverReady = false;
+      setStatus("idle", "Click START — use Laptop Mic mode (recommended)");
+      log("Server ready");
+    } catch (e) {
       els.badge.className = "badge error";
       els.badge.textContent = "Offline";
-      setStatus("error", "Server not running — run start.bat or check Vercel");
+      setStatus("error", "Server offline");
+      log("Server offline: " + e.message);
     }
   }
 
-  async function transcribeWav(wavBlob) {
+  async function transcribeBlob(blob) {
     const form = new FormData();
-    form.append("audio", wavBlob, "audio.wav");
+    form.append("audio", blob, "audio.webm");
     form.append("language", "en");
-    form.append("prompt", fullTranscript.slice(-220) || "Job interview. Interviewer asks a question.");
+    form.append("prompt", fullTranscript.slice(-200) || "Job interview question.");
 
+    log("Sending " + Math.round(blob.size / 1024) + "KB to Whisper…");
     const res = await fetch("/api/transcribe", { method: "POST", body: form });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Transcription failed");
+    if (!res.ok) throw new Error(data.error || "Transcribe failed");
     return (data.text || "").trim();
   }
 
   function mergeText(newText) {
     if (!newText) return;
+    const n = newText.trim();
     if (!fullTranscript) {
-      fullTranscript = newText;
+      fullTranscript = n;
       return;
     }
     const a = fullTranscript.toLowerCase();
-    const b = newText.toLowerCase();
-    if (b.length >= a.length && (b.includes(a) || newText.length > fullTranscript.length + 8)) {
-      fullTranscript = newText;
-    } else if (!a.includes(b)) {
-      fullTranscript = fullTranscript.trim() + " " + newText;
-    }
+    const b = n.toLowerCase();
+    if (b.includes(a) && n.length > fullTranscript.length) fullTranscript = n;
+    else if (!a.includes(b)) fullTranscript = fullTranscript + " " + n;
   }
 
   async function streamAnswer(text) {
     els.answer.textContent = "";
     els.answer.classList.remove("empty");
+    setStatus("processing", "Generating detailed answer…");
+    log("Asking AI…");
 
     const res = await fetch("/api/chat", {
       method: "POST",
@@ -218,106 +198,148 @@
       throw new Error(err.error || "Answer failed");
     }
 
-    setStatus("processing", "Writing detailed answer…");
-
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
-    let fullAnswer = "";
+    let answer = "";
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
       buffer = lines.pop() || "";
-
       for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data:")) continue;
-        const data = trimmed.slice(5).trim();
-        if (data === "[DONE]") continue;
+        if (!line.trim().startsWith("data:")) continue;
+        const d = line.trim().slice(5).trim();
+        if (d === "[DONE]") continue;
         try {
-          const json = JSON.parse(data);
-          const delta = json.choices?.[0]?.delta?.content;
+          const delta = JSON.parse(d).choices?.[0]?.delta?.content;
           if (delta) {
-            fullAnswer += delta;
-            els.answer.textContent = fullAnswer;
+            answer += delta;
+            els.answer.textContent = answer;
             els.answer.scrollTop = els.answer.scrollHeight;
           }
         } catch {}
       }
     }
-
-    return fullAnswer;
+    log("Answer received (" + answer.length + " chars)");
+    return answer;
   }
 
-  async function processSamples(chunks, sampleRate) {
-    if (!chunks.length || isProcessing) return;
+  async function handleText(text) {
+    if (!text || text.length < 3) return;
 
-    const merged = mergeSamples(chunks);
-    if (merged.length < MIN_SAMPLES) return;
+    mergeText(text);
+    interimText = "";
+    showTranscript();
+    log('Heard: "' + text.slice(0, 60) + (text.length > 60 ? "…" : "") + '"');
 
-    const wav = encodeWav(merged, sampleRate);
-    if (wav.size < 3000) return;
+    if (fullTranscript === lastAnswered) return;
+
+    if (isProcessing) {
+      pendingQueue = true;
+      return;
+    }
 
     isProcessing = true;
-    setStatus("processing", "Transcribing what interviewer said…");
-
     try {
-      const text = await transcribeWav(wav);
-      if (!text || text.length < 2) {
-        setStatus("listening", "Listening… (no speech in last clip)");
-        return;
-      }
-
-      mergeText(text);
-      els.transcript.textContent = fullTranscript;
-      els.transcript.classList.remove("empty");
-
-      if (fullTranscript === lastAnswered) {
-        setStatus("listening", "Listening for next question…");
-        return;
-      }
-
-      setStatus("processing", "Generating detailed answer…");
       await streamAnswer(fullTranscript);
       lastAnswered = fullTranscript;
-      setStatus("listening", "Answer ready — listening for next question");
+      if (isRunning) setStatus("listening", "Listening for next question…");
     } catch (err) {
-      console.error(err);
+      log("Error: " + err.message);
       setStatus("error", err.message);
-      setTimeout(() => {
-        if (isRunning) setStatus("listening", "Still listening…");
-      }, 2500);
+    } finally {
+      isProcessing = false;
+      if (pendingQueue) {
+        pendingQueue = false;
+        if (fullTranscript !== lastAnswered) handleText(fullTranscript);
+      }
+    }
+  }
+
+  async function processBlob(blob) {
+    if (!blob || blob.size < MIN_BLOB) {
+      log("Clip too small (" + (blob?.size || 0) + " bytes), skipping");
+      return;
+    }
+    if (isProcessing) {
+      pendingQueue = true;
+      return;
+    }
+    isProcessing = true;
+    setStatus("processing", "Transcribing audio…");
+    try {
+      const text = await transcribeBlob(blob);
+      if (text) {
+        await handleText(text);
+      } else {
+        log("Whisper returned empty — turn up volume");
+        if (isRunning) setStatus("listening", "Listening…");
+      }
+    } catch (err) {
+      log("Transcribe error: " + err.message);
+      setStatus("error", err.message);
     } finally {
       isProcessing = false;
     }
   }
 
-  function flushBuffer(force) {
-    if (!sampleBuffer.length || !audioContext) return;
-    const silentFor = Date.now() - lastSoundAt;
-    if (!force && silentFor < SILENCE_MS) return;
-    if (!force && lastSoundAt === 0) return;
-
-    const chunks = sampleBuffer.slice();
-    sampleBuffer = [];
-    const rate = audioContext.sampleRate;
-    if (!force) lastSoundAt = 0;
-    processSamples(chunks, rate);
+  function scheduleSpeechAnswer() {
+    clearTimeout(speechSilenceTimer);
+    speechSilenceTimer = setTimeout(() => {
+      const text = (fullTranscript + " " + interimText).trim();
+      if (text.length >= 8) {
+        interimText = "";
+        handleText(text);
+      }
+    }, 1800);
   }
 
-  async function getAudioStream() {
-    if (captureMode === "mic") {
-      return navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true },
-      });
-    }
+  function startSpeechEngine() {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) throw new Error("Speech recognition not supported. Use Chrome.");
 
+    recognition = new SR();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = "en-US";
+
+    recognition.onresult = (e) => {
+      interimText = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript.trim();
+        if (!t) continue;
+        if (e.results[i].isFinal) {
+          fullTranscript = (fullTranscript + " " + t).trim();
+        } else {
+          interimText = (interimText + " " + t).trim();
+        }
+      }
+      showTranscript();
+      scheduleSpeechAnswer();
+    };
+
+    recognition.onerror = (e) => {
+      if (e.error === "no-speech" || e.error === "aborted") return;
+      log("Speech error: " + e.error);
+      if (e.error === "not-allowed") setStatus("error", "Allow microphone in browser");
+    };
+
+    recognition.onend = () => {
+      if (isRunning) {
+        try { recognition.start(); log("Speech restarted"); } catch {}
+      }
+    };
+
+    recognition.start();
+    log("Speech recognition started (laptop mic)");
+  }
+
+  async function startRecorderEngine() {
     const stream = await navigator.mediaDevices.getDisplayMedia({
-      video: { width: 320, height: 240, frameRate: 1 },
+      video: { width: 640, height: 360, frameRate: 5 },
       audio: true,
     });
 
@@ -325,134 +347,156 @@
     await els.hiddenVideo.play().catch(() => {});
 
     if (!stream.getAudioTracks().length) {
-      throw new Error(
-        captureMode === "tab"
-          ? 'No audio! Pick the Meet/Zoom TAB and enable "Share tab audio".'
-          : 'No audio! Pick screen and enable "Share system audio".'
-      );
+      stream.getTracks().forEach((t) => t.stop());
+      throw new Error('NO AUDIO! Enable "Share tab audio" or "Share system audio".');
     }
 
-    return stream;
+    log("Tab/screen audio captured: " + stream.getAudioTracks().length + " track(s)");
+    mediaStream = stream;
+    startMeter(stream);
+
+    const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+      ? "audio/webm;codecs=opus"
+      : "audio/webm";
+
+    mediaRecorder = new MediaRecorder(stream, { mimeType: mime, audioBitsPerSecond: 128000 });
+
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size >= MIN_BLOB) {
+        log("Auto clip: " + Math.round(e.data.size / 1024) + "KB");
+        processBlob(e.data);
+      }
+    };
+
+    mediaRecorder.onerror = (e) => log("Recorder error: " + e.error);
+
+    mediaRecorder.start(RECORD_EVERY_MS);
+    log("Recording every " + RECORD_EVERY_MS / 1000 + "s from tab audio");
+  }
+
+  async function startMicRecorderEngine() {
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true },
+    });
+
+    startMeter(mediaStream);
+    startSpeechEngine();
+
+    const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+      ? "audio/webm;codecs=opus"
+      : "audio/webm";
+
+    mediaRecorder = new MediaRecorder(mediaStream, { mimeType: mime });
+
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size >= MIN_BLOB) processBlob(e.data);
+    };
+
+    mediaRecorder.start(RECORD_EVERY_MS);
+    log("Mic + speech recognition active");
   }
 
   async function startListening() {
     if (!serverReady) {
-      alert("Add OPENAI_API_KEY first (Settings or .env file)");
+      alert("Add OPENAI_API_KEY first");
       return;
     }
 
-    displayStream = await getAudioStream();
-
-    audioContext = new AudioContext({ sampleRate: 48000 });
-    if (audioContext.state === "suspended") await audioContext.resume();
-
-    const source = audioContext.createMediaStreamSource(displayStream);
-    processor = audioContext.createScriptProcessor(4096, 1, 1);
-
-    sampleBuffer = [];
-    lastSoundAt = 0;
     fullTranscript = "";
+    interimText = "";
     lastAnswered = "";
-    els.transcript.textContent = "Listening…";
-    els.transcript.classList.remove("empty");
-    els.answer.textContent = "Detailed answer will appear here…";
+    showTranscript();
+    els.answer.textContent = "Answer appears here…";
     els.answer.classList.add("empty");
 
-    processor.onaudioprocess = (e) => {
-      if (!isRunning) return;
-      const input = e.inputBuffer.getChannelData(0);
-      let sum = 0;
-      for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
-      const rms = Math.sqrt(sum / input.length);
-      currentRms = rms;
-      sampleBuffer.push(new Float32Array(input));
-      if (rms > MIN_RMS) lastSoundAt = Date.now();
-
-      let total = 0;
-      for (const c of sampleBuffer) total += c.length;
-      if (total > audioContext.sampleRate * 60) flushBuffer(true);
-    };
-
-    source.connect(processor);
-    processor.connect(audioContext.destination);
-
     isRunning = true;
-    els.micMeter.classList.remove("hidden");
     els.startBtn.querySelector(".btn-label").textContent = "STOP";
     els.startBtn.classList.add("active");
     els.forceBtn.disabled = false;
-    setStatus("listening", "Hearing interview audio — speak from Meet/Zoom");
+    setStatus("listening", "Listening…");
 
-    meterTimer = setInterval(() => updateMeter(currentRms), 100);
-    flushTimer = setInterval(() => {
-      if (lastSoundAt > 0 && Date.now() - lastSoundAt >= SILENCE_MS) {
-        flushBuffer(false);
-      }
-    }, 300);
+    if (captureMode === "mic") {
+      await startMicRecorderEngine();
+      setStatus("listening", "Mic active — play interview on laptop speaker");
+    } else {
+      await startRecorderEngine();
+      setStatus("listening", "Tab audio recording every 7 seconds");
+    }
   }
 
   function stopListening() {
     isRunning = false;
-    if (flushTimer) { clearInterval(flushTimer); flushTimer = null; }
-    if (meterTimer) { clearInterval(meterTimer); meterTimer = null; }
-    flushBuffer(true);
+    clearTimeout(speechSilenceTimer);
 
-    if (processor) {
-      processor.disconnect();
-      processor.onaudioprocess = null;
-      processor = null;
+    if (recognition) {
+      recognition.onend = null;
+      try { recognition.stop(); } catch {}
+      recognition = null;
     }
-    if (audioContext) {
-      audioContext.close().catch(() => {});
-      audioContext = null;
+
+    if (mediaRecorder && mediaRecorder.state !== "inactive") {
+      try { mediaRecorder.stop(); } catch {}
     }
-    if (displayStream) {
-      displayStream.getTracks().forEach((t) => t.stop());
-      displayStream = null;
+    mediaRecorder = null;
+
+    if (mediaStream) {
+      mediaStream.getTracks().forEach((t) => t.stop());
+      mediaStream = null;
     }
+
     els.hiddenVideo.srcObject = null;
-    els.micMeter.classList.add("hidden");
-    els.startBtn.querySelector(".btn-label").textContent = "START — Listen & Answer";
+    stopMeter();
+
+    els.startBtn.querySelector(".btn-label").textContent = "START";
     els.startBtn.classList.remove("active");
     els.forceBtn.disabled = true;
     setStatus("idle", "Stopped");
+    log("Stopped");
   }
 
-  function openSettings() {
-    applySettingsToForm();
-    els.settingsOverlay.classList.remove("hidden");
+  function forceAnswer() {
+    const text = (fullTranscript + " " + interimText).trim();
+    if (text.length >= 3) {
+      interimText = "";
+      handleText(text);
+    } else {
+      log("Nothing heard yet — speak or play audio");
+      alert("Nothing heard yet.\n\n1. Check audio meter moves\n2. Turn up laptop volume\n3. Use Laptop Mic mode");
+    }
   }
 
-  function closeSettings() {
-    els.settingsOverlay.classList.add("hidden");
-  }
-
+  els.modeMic.addEventListener("click", () => setMode("mic"));
   els.modeTab.addEventListener("click", () => setMode("tab"));
   els.modeScreen.addEventListener("click", () => setMode("screen"));
-  els.modeMic.addEventListener("click", () => setMode("mic"));
 
   els.startBtn.addEventListener("click", async () => {
     if (isRunning) { stopListening(); return; }
     try {
       await startListening();
     } catch (err) {
+      log("Start failed: " + err.message);
       alert(err.message);
       setStatus("error", err.message);
+      stopListening();
     }
   });
 
-  els.forceBtn.addEventListener("click", () => flushBuffer(true));
-  els.settingsBtn.addEventListener("click", openSettings);
-  els.closeSettings.addEventListener("click", closeSettings);
+  els.forceBtn.addEventListener("click", forceAnswer);
+  els.settingsBtn.addEventListener("click", () => {
+    applySettingsToForm();
+    els.settingsOverlay.classList.remove("hidden");
+  });
+  els.closeSettings.addEventListener("click", () => els.settingsOverlay.classList.add("hidden"));
   els.settingsOverlay.addEventListener("click", (e) => {
-    if (e.target === els.settingsOverlay) closeSettings();
+    if (e.target === els.settingsOverlay) els.settingsOverlay.classList.add("hidden");
   });
   els.saveSettings.addEventListener("click", () => {
     saveSettingsToStorage();
-    closeSettings();
-    setStatus("idle", "Settings saved");
+    els.settingsOverlay.classList.add("hidden");
+    log("Settings saved");
   });
 
   applySettingsToForm();
+  setMode("mic");
   checkServer();
 })();
