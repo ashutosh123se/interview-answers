@@ -136,9 +136,9 @@ def transcribe():
             headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
             files={
                 "file": (
-                    audio.filename or "audio.webm",
+                    audio.filename or "audio.wav",
                     audio.stream,
-                    audio.mimetype or "audio/webm",
+                    audio.mimetype or "audio/wav",
                 )
             },
             data={

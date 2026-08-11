@@ -51,7 +51,7 @@ export default async function handler(req, res) {
     const blob = new Blob([buffer], { type: audioFile.mimetype || "audio/webm" });
 
     const formData = new FormData();
-    formData.append("file", blob, audioFile.originalFilename || "recording.webm");
+    formData.append("file", blob, audioFile.originalFilename || "audio.wav");
     formData.append("model", "whisper-1");
     formData.append("language", language);
     formData.append("prompt", prompt);

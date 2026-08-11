@@ -10,9 +10,17 @@
     .session-id { font-size: 2rem; font-weight: 800; letter-spacing: 0.15em; color: var(--accent); text-align: center; padding: 12px; }
     .steps { font-size: 0.85rem; color: var(--muted); line-height: 1.7; }
     .steps li { margin-bottom: 6px; }
+    .mode-btns { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+    .mode-btns button { flex: 1; min-width: 120px; padding: 10px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer; font-size: 0.85rem; }
+    .mode-btns button.active { border-color: var(--accent); background: rgba(56,189,248,0.15); color: var(--accent); }
+    #hidden-video { position: fixed; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+    .audio-ok { color: var(--success); font-weight: 600; }
+    .audio-bad { color: var(--danger); font-weight: 600; }
   </style>
 </head>
 <body>
+  <video id="hidden-video" muted playsinline></video>
+
   <div id="app">
     <header>
       <div class="header-left">
@@ -23,31 +31,35 @@
 
     <main>
       <div class="hero-box">
-        <strong>This runs on your LAPTOP.</strong> It captures audio directly from your Meet/Zoom tab — much clearer than phone mic.
+        <strong>Must use Chrome.</strong> Join interview in browser (not Zoom desktop app).
+        When sharing, pick the <strong>Meet/Zoom tab</strong> and enable <strong>Share tab audio</strong>.
       </div>
 
       <section class="panel">
-        <h2>Session ID — enter this on your phone</h2>
+        <h2>Session ID for phone</h2>
         <div id="session-id" class="session-id">------</div>
-        <p class="steps">Phone URL: <code id="phone-url">display.html?id=------</code></p>
+        <p class="steps">Phone: <code id="phone-url">display.html?id=------</code></p>
       </section>
 
       <section id="status-bar" class="status idle">
         <span id="status-dot"></span>
         <div class="status-body">
-          <span id="status-text">Create session to begin</span>
+          <span id="status-text">Waiting…</span>
+          <div id="mic-meter" class="mic-meter hidden">
+            <span class="mic-label">Audio level</span>
+            <div class="mic-track"><div id="mic-level" class="mic-fill"></div></div>
+            <span id="audio-hint" class="mic-label"></span>
+          </div>
         </div>
       </section>
 
       <section class="panel">
-        <h2>Setup steps</h2>
-        <ol class="steps">
-          <li>Join interview on Meet/Zoom in Chrome</li>
-          <li>Enter your background below (optional)</li>
-          <li>Click <strong>START</strong> → pick the <strong>Meet/Zoom tab</strong></li>
-          <li>Check <strong>"Share tab audio"</strong> ✓</li>
-          <li>Answers appear on your phone automatically</li>
-        </ol>
+        <h2>Audio source</h2>
+        <div class="mode-btns">
+          <button type="button" id="mode-tab" class="active">Meet/Zoom Tab</button>
+          <button type="button" id="mode-screen">Entire Screen</button>
+          <button type="button" id="mode-mic">Laptop Mic</button>
+        </div>
       </section>
 
       <section class="panel">
@@ -56,15 +68,21 @@
       </section>
 
       <section class="panel">
-        <h2>Heard on laptop</h2>
+        <h2>Question heard</h2>
         <p id="transcript" class="transcript empty">Waiting…</p>
+      </section>
+
+      <section class="panel answer-panel">
+        <h2>Answer (also on phone)</h2>
+        <div id="answer" class="answer empty">Answer appears here…</div>
       </section>
 
       <section id="controls">
         <button id="start-btn" class="btn hero primary" disabled>
           <span class="btn-icon">▶</span>
-          <span class="btn-label">START — Share Meet Tab Audio</span>
+          <span class="btn-label">START</span>
         </button>
+        <button id="force-btn" class="btn secondary" disabled>Transcribe Now</button>
       </section>
     </main>
   </div>
