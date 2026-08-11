@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#0f172a" />
+  <title>Interview Assistant — Phone</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header>
+      <div class="header-left">
+        <h1>Interview Answers</h1>
+        <span id="sync-badge" class="badge checking">Connecting…</span>
+      </div>
+    </header>
+
+    <main>
+      <section class="panel" id="join-panel">
+        <h2>Enter Session ID from laptop</h2>
+        <input type="text" id="session-input" placeholder="e.g. A3K9F2" maxlength="8" style="width:100%;padding:14px;font-size:1.2rem;text-align:center;letter-spacing:0.1em;background:var(--surface);border:1px solid var(--border);border-radius:10px;color:var(--text);text-transform:uppercase;" />
+        <button id="join-btn" class="btn primary" style="width:100%;margin-top:10px;">Connect</button>
+      </section>
+
+      <section id="status-bar" class="status idle">
+        <span id="status-dot"></span>
+        <span id="status-text">Enter session ID from laptop</span>
+      </section>
+
+      <section id="heard-panel" class="panel">
+        <h2>Question heard</h2>
+        <p id="transcript" class="transcript empty">Waiting for laptop to hear question…</p>
+      </section>
+
+      <section id="answer-panel" class="panel answer-panel">
+        <h2>Answer</h2>
+        <div id="answer" class="answer empty">Answer will appear here from laptop listener.</div>
+      </section>
+    </main>
+  </div>
+  <script src="display.js"></script>
+</body>
+</html>

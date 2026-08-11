@@ -2,86 +2,37 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="theme-color" content="#0f172a" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Interview Assistant</title>
-  <link rel="manifest" href="manifest.json" />
   <link rel="stylesheet" href="styles.css" />
+  <style>
+    .cards { display: flex; flex-direction: column; gap: 12px; padding: 16px; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 20px; }
+    .card h2 { font-size: 1.1rem; margin-bottom: 8px; }
+    .card p { font-size: 0.9rem; color: var(--muted); line-height: 1.5; margin-bottom: 14px; }
+    .card .btn { width: 100%; text-decoration: none; display: block; text-align: center; }
+    .warn { background: rgba(251,191,36,0.1); border: 1px solid rgba(251,191,36,0.3); border-radius: 12px; padding: 14px; margin: 0 16px 12px; font-size: 0.85rem; line-height: 1.5; color: var(--muted); }
+  </style>
 </head>
 <body>
   <div id="app">
-    <header>
-      <div class="header-left">
-        <h1>Interview Assistant</h1>
-        <span id="server-badge" class="badge checking">Checking…</span>
+    <header><h1>Interview Assistant</h1></header>
+    <div class="warn">
+      <strong>Important:</strong> Phone mic cannot hear laptop speaker reliably.
+      Use <strong>Laptop Listener</strong> to capture Meet/Zoom tab audio directly.
+    </div>
+    <div class="cards">
+      <div class="card">
+        <h2>1. Laptop (Listener)</h2>
+        <p>Run on laptop during interview. Shares Meet/Zoom tab audio — hears every word clearly.</p>
+        <a href="listener.html" class="btn primary">Open Laptop Listener</a>
       </div>
-      <button id="settings-btn" class="icon-btn" aria-label="Settings">⚙️</button>
-    </header>
-
-    <main>
-      <section id="status-bar" class="status idle">
-        <span id="status-dot"></span>
-        <div class="status-body">
-          <span id="status-text">Tap START to begin</span>
-          <div id="mic-meter" class="mic-meter hidden">
-            <span class="mic-label">Mic level</span>
-            <div class="mic-track"><div id="mic-level" class="mic-fill"></div></div>
-          </div>
-        </div>
-      </section>
-
-      <section id="heard-panel" class="panel">
-        <h2>Question heard</h2>
-        <p id="transcript" class="transcript empty">Waiting for speech…</p>
-      </section>
-
-      <section id="answer-panel" class="panel answer-panel">
-        <h2>Answer</h2>
-        <div id="answer" class="answer empty">Your answer will appear here automatically.</div>
-      </section>
-
-      <section id="controls">
-        <button id="listen-btn" class="btn hero primary" disabled>
-          <span class="btn-icon">▶</span>
-          <span class="btn-label">START — Grab All &amp; Answer</span>
-        </button>
-        <button id="ask-btn" class="btn secondary" disabled>Process Now</button>
-      </section>
-    </main>
-
-    <div id="settings-overlay" class="overlay hidden">
-      <div class="settings-sheet">
-        <div class="settings-header">
-          <h2>Settings</h2>
-          <button id="close-settings" class="icon-btn">✕</button>
-        </div>
-
-        <p class="info-box">On Vercel: add <code>OPENAI_API_KEY</code> in project Settings → Environment Variables. Locally: use <code>.env</code> on laptop.</p>
-
-        <label for="hearing-mode">Hearing mode</label>
-        <select id="hearing-mode">
-          <option value="whisper">Continuous capture + Whisper AI (recommended)</option>
-        </select>
-
-        <label for="model">Answer model</label>
-        <select id="model">
-          <option value="gpt-4o-mini">gpt-4o-mini (fastest)</option>
-          <option value="gpt-4o">gpt-4o (smarter)</option>
-        </select>
-
-        <label for="context">Your background (optional)</label>
-        <textarea id="context" rows="4" placeholder="Job role, skills, projects — helps personalize answers"></textarea>
-
-        <label for="silence-ms">Wait after speech stops before processing (ms) — higher = captures more words</label>
-        <input type="number" id="silence-ms" value="2800" min="1500" max="5000" step="100" />
-
-        <button id="save-settings" class="btn primary">Save</button>
+      <div class="card">
+        <h2>2. Phone (Answers)</h2>
+        <p>Enter session ID from laptop. Shows questions heard and AI answers.</p>
+        <a href="display.html" class="btn secondary">Open Phone Display</a>
       </div>
     </div>
   </div>
-
-  <script src="app.js"></script>
 </body>
 </html>

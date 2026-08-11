@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Interview Assistant — Laptop Listener</title>
+  <link rel="stylesheet" href="styles.css" />
+  <style>
+    .hero-box { background: rgba(56,189,248,0.1); border: 1px solid rgba(56,189,248,0.3); border-radius: 12px; padding: 16px; margin-bottom: 12px; font-size: 0.9rem; line-height: 1.6; }
+    .session-id { font-size: 2rem; font-weight: 800; letter-spacing: 0.15em; color: var(--accent); text-align: center; padding: 12px; }
+    .steps { font-size: 0.85rem; color: var(--muted); line-height: 1.7; }
+    .steps li { margin-bottom: 6px; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header>
+      <div class="header-left">
+        <h1>Laptop Listener</h1>
+        <span id="server-badge" class="badge checking">Checking…</span>
+      </div>
+    </header>
+
+    <main>
+      <div class="hero-box">
+        <strong>This runs on your LAPTOP.</strong> It captures audio directly from your Meet/Zoom tab — much clearer than phone mic.
+      </div>
+
+      <section class="panel">
+        <h2>Session ID — enter this on your phone</h2>
+        <div id="session-id" class="session-id">------</div>
+        <p class="steps">Phone URL: <code id="phone-url">display.html?id=------</code></p>
+      </section>
+
+      <section id="status-bar" class="status idle">
+        <span id="status-dot"></span>
+        <div class="status-body">
+          <span id="status-text">Create session to begin</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Setup steps</h2>
+        <ol class="steps">
+          <li>Join interview on Meet/Zoom in Chrome</li>
+          <li>Enter your background below (optional)</li>
+          <li>Click <strong>START</strong> → pick the <strong>Meet/Zoom tab</strong></li>
+          <li>Check <strong>"Share tab audio"</strong> ✓</li>
+          <li>Answers appear on your phone automatically</li>
+        </ol>
+      </section>
+
+      <section class="panel">
+        <h2>Your background</h2>
+        <textarea id="context" rows="3" placeholder="Job role, skills, projects…"></textarea>
+      </section>
+
+      <section class="panel">
+        <h2>Heard on laptop</h2>
+        <p id="transcript" class="transcript empty">Waiting…</p>
+      </section>
+
+      <section id="controls">
+        <button id="start-btn" class="btn hero primary" disabled>
+          <span class="btn-icon">▶</span>
+          <span class="btn-label">START — Share Meet Tab Audio</span>
+        </button>
+      </section>
+    </main>
+  </div>
+  <script src="listener.js"></script>
+</body>
+</html>
