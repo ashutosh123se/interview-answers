@@ -1,78 +1,74 @@
 # Interview Assistant
 
-Phone app that hears interview questions (from your laptop speaker) and shows AI answers — fast and private.
+Phone app that listens to interview questions and shows AI answers in real time.
 
-## Setup (one time)
+Works **locally** (laptop + phone on same Wi‑Fi) or **online** via Vercel (phone opens HTTPS URL anywhere).
 
-### 1. Run setup on your laptop
+## Deploy to Vercel (recommended for phone)
 
-Double-click **`setup.bat`**
+### 1. Push to GitHub
 
-This installs dependencies and creates a `.env` file.
+Already at: [github.com/ashutosh123se/interview-answers](https://github.com/ashutosh123se/interview-answers)
 
-### 2. Add your OpenAI API key
+### 2. Import on Vercel
 
-Open **`.env`** in Notepad and replace the placeholder:
+1. Go to [vercel.com/new](https://vercel.com/new)
+2. Import **ashutosh123se/interview-answers**
+3. Click **Deploy** (no build command needed)
 
-```
-OPENAI_API_KEY=sk-your-actual-key-here
-OPENAI_MODEL=gpt-4o-mini
-PORT=8080
-```
+### 3. Add environment variable on Vercel
 
-**Do not share your API key in chat or commit `.env` to git.**  
-If you already shared it publicly, revoke it at [platform.openai.com](https://platform.openai.com/api-keys) and create a new one.
+In Vercel → Project → **Settings → Environment Variables**:
 
-### 3. Start the server
+| Key | Value |
+|-----|--------|
+| `OPENAI_API_KEY` | Your OpenAI key (`sk-proj-...`) |
+| `OPENAI_MODEL` | `gpt-4o-mini` (optional) |
 
-Double-click **`start.bat`**
+Turn **Sensitive** ON. Redeploy after adding.
 
-The terminal shows a URL like `http://192.168.1.5:8080`.
+### 4. Open on phone
 
-## Use during interview
+Open your Vercel URL on your phone (e.g. `https://interview-answers.vercel.app`):
 
-1. **Laptop** — join the interview call (Meet / Zoom / Teams)
-2. **Phone** — open the URL from the terminal (same Wi‑Fi)
-3. Allow **microphone** when asked
-4. Optional: **Settings** → add your job role & skills
-5. Tap **▶ START — Hear & Answer**
-6. Place phone **near laptop speaker** (30–50 cm)
-7. Read answers on your phone (not on shared screen)
+- HTTPS = mic works properly on phone
+- No laptop server needed
+- Works on any Wi‑Fi / mobile data
 
-## How it works
+---
 
-```
-Laptop speaker → Phone mic → Speech-to-text → Your laptop server → OpenAI → Answer on phone
-```
+## Local setup (alternative)
 
-- API key stays on your **laptop** (`.env`) — never on the phone
-- **START** = hear + auto-analyze + show answer
-- **Send Now** = manual trigger if auto-detect misses a question
+### 1. Setup
 
-## Speed tips
+Double-click **`setup.bat`**, then add API key to **`.env`**
 
-| Setting | Value |
-|---------|-------|
-| Model | `gpt-4o-mini` (default, fastest) |
-| Auto-send silence | 500–900 ms in Settings |
-| Laptop volume | Medium-high |
-| Phone | Keep screen on, Chrome on Android works best |
+### 2. Run
+
+Double-click **`start.bat`**, open the local URL on your phone (same Wi‑Fi)
+
+---
+
+## How to use
+
+1. Open app on phone (Vercel URL or local URL)
+2. Allow **microphone**
+3. Settings → add your **job role & skills**
+4. Tap **▶ START — Grab All & Answer**
+5. Place phone near laptop speaker during interview
+6. Read answers on phone
+
+---
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `start.bat` | Launch server |
-| `setup.bat` | First-time setup |
-| `.env` | Your API key (local only) |
-| `server.py` | Server + secure OpenAI proxy |
-| `index.html` / `app.js` | Phone UI |
+| `api/` | Vercel serverless API (chat, transcribe, health) |
+| `vercel.json` | Vercel config |
+| `server.py` | Local Flask server (optional) |
+| `app.js` | Phone UI + continuous audio capture |
 
-## Troubleshooting
+## Security
 
-| Problem | Fix |
-|---------|-----|
-| Badge says **No API key** | Add key to `.env`, restart `start.bat` |
-| Badge says **Offline** | Run `start.bat`, same Wi‑Fi on phone |
-| Mic not working | Allow microphone in browser settings |
-| Slow answers | Use `gpt-4o-mini`, lower silence to 600 ms |
+Never commit `.env`. Add `OPENAI_API_KEY` only in Vercel dashboard or local `.env`.

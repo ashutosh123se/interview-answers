@@ -63,6 +63,57 @@ def health():
     )
 
 
+@app.route("/api/transcribe", methods=["POST", "OPTIONS"])
+def transcribe():
+    if request.method == "OPTIONS":
+        return ("", 204)
+
+    if not OPENAI_API_KEY:
+        return jsonify({"error": "OPENAI_API_KEY missing. Add it to .env on your laptop."}), 500
+
+    audio = request.files.get("audio")
+    if not audio:
+        return jsonify({"error": "No audio uploaded"}), 400
+
+    language = (request.form.get("language") or "en").strip()
+
+    try:
+        upstream = requests.post(
+            "https://api.openai.com/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+            files={
+                "file": (
+                    audio.filename or "audio.webm",
+                    audio.stream,
+                    audio.mimetype or "audio/webm",
+                )
+            },
+            data={
+                "model": "whisper-1",
+                "language": language,
+                "prompt": "Job interview. Interviewer asks a question.",
+            },
+            timeout=45,
+        )
+    except requests.RequestException as exc:
+        return jsonify({"error": f"Network error: {exc}"}), 502
+
+    if upstream.status_code != 200:
+        try:
+            err = upstream.json()
+            message = err.get("error", {}).get("message", upstream.text)
+        except Exception:
+            message = upstream.text or f"Whisper error {upstream.status_code}"
+        return jsonify({"error": message}), upstream.status_code
+
+    try:
+        text = upstream.json().get("text", "").strip()
+    except Exception:
+        text = ""
+
+    return jsonify({"text": text})
+
+
 @app.route("/api/chat", methods=["POST", "OPTIONS"])
 def chat():
     if request.method == "OPTIONS":
@@ -75,26 +126,44 @@ def chat():
     question = (body.get("question") or "").strip()
     context = (body.get("context") or "").strip()
     model = (body.get("model") or DEFAULT_MODEL).strip()
+    raw_transcript = bool(body.get("rawTranscript"))
 
     if not question:
         return jsonify({"error": "No question provided"}), 400
 
-    system_prompt = (
-        "Interview coach. Reply FAST with a short spoken answer (3-5 sentences max). "
-        "Use bullets only if needed. No intro, no filler. Start with the answer immediately. "
-        "For coding: brief steps or 3-5 lines of code max."
-    )
+    if raw_transcript:
+        system_prompt = (
+            "Expert interview assistant. You receive a RAW microphone transcript captured "
+            "from a phone near a laptop during a live job interview.\n\n"
+            "YOUR JOB:\n"
+            "1. Find the interviewer's actual question in the messy text (ignore noise, "
+            "filler, duplicate words, candidate speech if mixed in).\n"
+            "2. If no real question yet, reply ONLY: Still listening — no clear question yet.\n"
+            "3. If a question is found, start with one line: **Question:** <the question>\n"
+            "4. Then give an accurate, natural spoken answer (4-7 sentences). "
+            "Be precise and factual. For coding/technical questions include key steps or short code.\n"
+            "5. Do not say 'As an AI' or add filler."
+        )
+        user_content = f"Raw transcript from room audio:\n\n{question}"
+    else:
+        system_prompt = (
+            "Interview coach. Reply FAST with a short spoken answer (3-5 sentences max). "
+            "Use bullets only if needed. No intro, no filler. Start with the answer immediately. "
+            "For coding: brief steps or 3-5 lines of code max."
+        )
+        user_content = question
+
     if context:
-        system_prompt += f"\n\nCandidate:\n{context}"
+        system_prompt += f"\n\nCandidate background:\n{context}"
 
     payload = {
         "model": model,
         "stream": True,
         "temperature": 0.2,
-        "max_tokens": 350,
+        "max_tokens": 500 if raw_transcript else 350,
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": question},
+            {"role": "user", "content": user_content},
         ],
     }
 

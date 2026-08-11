@@ -1,0 +1,13 @@
+{
+  "name": "interview-assistant",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vercel dev",
+    "build": "echo 'Static site + serverless API'"
+  },
+  "dependencies": {
+    "formidable": "^3.5.4"
+  }
+}

@@ -1,4 +1,4 @@
-const CACHE = "interview-assistant-v3";
+const CACHE = "interview-assistant-v6";
 const ASSETS = ["./", "./index.html", "./styles.css", "./app.js", "./manifest.json"];
 
 self.addEventListener("install", (event) => {
