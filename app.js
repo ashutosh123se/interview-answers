@@ -2,54 +2,50 @@
   "use strict";
 
   const STORAGE_KEY = "interview_assistant_settings";
-  const VOLUME_THRESHOLD = 3;
-  const MIN_AUDIO_BYTES = 800;
-  const MAX_SEGMENT_MS = 90000;
-  const RECORD_SLICE_MS = 200;
-  const PRE_ROLL_MS = 2000;
-  const POST_ROLL_MS = 1800;
-  const BUFFER_KEEP_MS = 120000;
+  const SILENCE_MS = 2400;
+  const MIN_RMS = 0.008;
+  const MIN_SAMPLES = 16000 * 2;
 
   const $ = (id) => document.getElementById(id);
 
   const els = {
+    badge: $("server-badge"),
     statusBar: $("status-bar"),
     statusText: $("status-text"),
     micMeter: $("mic-meter"),
     micLevel: $("mic-level"),
-    serverBadge: $("server-badge"),
+    audioHint: $("audio-hint"),
     transcript: $("transcript"),
     answer: $("answer"),
-    listenBtn: $("listen-btn"),
-    askBtn: $("ask-btn"),
+    startBtn: $("start-btn"),
+    forceBtn: $("force-btn"),
+    hiddenVideo: $("hidden-video"),
+    modeTab: $("mode-tab"),
+    modeScreen: $("mode-screen"),
+    modeMic: $("mode-mic"),
     settingsBtn: $("settings-btn"),
     settingsOverlay: $("settings-overlay"),
     closeSettings: $("close-settings"),
     saveSettings: $("save-settings"),
-    hearingMode: $("hearing-mode"),
     model: $("model"),
     context: $("context"),
-    silenceMs: $("silence-ms"),
   };
 
   let settings = loadSettings();
-  let serverReady = false;
-  let isListening = false;
+  let captureMode = "tab";
+  let displayStream = null;
+  let audioContext = null;
+  let processor = null;
+  let isRunning = false;
   let isProcessing = false;
   let fullTranscript = "";
-  let lastAnsweredText = "";
-  let pendingProcess = false;
-
-  let mediaStream = null;
-  let audioContext = null;
-  let analyser = null;
-  let mediaRecorder = null;
-  let chunkLog = [];
-  let vadTimer = null;
-  let lastSpeechAt = 0;
-  let speechWindowStart = 0;
-  let sessionStartedAt = 0;
-  let finalizeTimer = null;
+  let lastAnswered = "";
+  let sampleBuffer = [];
+  let lastSoundAt = 0;
+  let flushTimer = null;
+  let meterTimer = null;
+  let currentRms = 0;
+  let serverReady = false;
 
   function loadSettings() {
     try {
@@ -60,29 +56,20 @@
   }
 
   function defaultSettings() {
-    return {
-      hearingMode: "whisper",
-      model: "gpt-4o-mini",
-      context: "",
-      silenceMs: 2800,
-    };
+    return { model: "gpt-4o-mini", context: "" };
   }
 
   function saveSettingsToStorage() {
     settings = {
-      hearingMode: els.hearingMode.value,
       model: els.model.value,
       context: els.context.value.trim(),
-      silenceMs: Number(els.silenceMs.value) || 2800,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
   }
 
   function applySettingsToForm() {
-    els.hearingMode.value = settings.hearingMode || "whisper";
     els.model.value = settings.model || "gpt-4o-mini";
     els.context.value = settings.context || "";
-    els.silenceMs.value = settings.silenceMs || 2800;
   }
 
   function setStatus(mode, text) {
@@ -90,402 +77,131 @@
     els.statusText.textContent = text;
   }
 
-  function setServerBadge(state, text) {
-    els.serverBadge.className = "badge " + state;
-    els.serverBadge.textContent = text;
+  function setMode(mode) {
+    captureMode = mode;
+    els.modeTab.classList.toggle("active", mode === "tab");
+    els.modeScreen.classList.toggle("active", mode === "screen");
+    els.modeMic.classList.toggle("active", mode === "mic");
   }
 
-  function setMainButton(active) {
-    const icon = els.listenBtn.querySelector(".btn-icon");
-    const label = els.listenBtn.querySelector(".btn-label");
-    if (active) {
-      icon.textContent = "■";
-      label.textContent = "STOP";
-      els.listenBtn.classList.add("active");
-    } else {
-      icon.textContent = "▶";
-      label.textContent = "START — Grab All & Answer";
-      els.listenBtn.classList.remove("active");
-    }
-  }
-
-  function mergeTranscript(newText) {
-    const clean = (newText || "").trim();
-    if (!clean) return;
-
-    if (!fullTranscript) {
-      fullTranscript = clean;
-      return;
-    }
-
-    const prev = fullTranscript.trim();
-    const prevLow = prev.toLowerCase();
-    const cleanLow = clean.toLowerCase();
-
-    if (cleanLow === prevLow) return;
-
-    if (cleanLow.startsWith(prevLow) || clean.length > prev.length + 8) {
-      fullTranscript = clean;
-      return;
-    }
-
-    if (prevLow.includes(cleanLow)) return;
-
-    fullTranscript = prev + " " + clean;
-  }
-
-  function updateTranscriptDisplay() {
-    if (!fullTranscript) {
-      els.transcript.textContent = isListening
-        ? "Recording every word — speak or play audio near phone…"
-        : "Waiting for speech…";
-      els.transcript.classList.add("empty");
-    } else {
-      els.transcript.textContent = fullTranscript;
-      els.transcript.classList.remove("empty");
-    }
-    els.askBtn.disabled = !fullTranscript || isProcessing || !serverReady;
-  }
-
-  function showMicMeter(show) {
-    els.micMeter.classList.toggle("hidden", !show);
-    if (!show) {
-      els.micLevel.style.width = "0%";
-      els.micLevel.classList.remove("loud");
-    }
-  }
-
-  function updateMicLevel(volume) {
-    const pct = Math.min(100, Math.round((volume / 35) * 100));
+  function updateMeter(rms) {
+    currentRms = rms;
+    const pct = Math.min(100, Math.round((rms / 0.08) * 100));
     els.micLevel.style.width = pct + "%";
-    els.micLevel.classList.toggle("loud", volume > VOLUME_THRESHOLD);
-  }
-
-  function getSupportedMimeType() {
-    const types = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"];
-    for (const type of types) {
-      if (MediaRecorder.isTypeSupported(type)) return type;
-    }
-    return "";
-  }
-
-  function readVolume() {
-    if (!analyser) return 0;
-
-    const timeData = new Uint8Array(analyser.fftSize);
-    analyser.getByteTimeDomainData(timeData);
-    let sum = 0;
-    for (let i = 0; i < timeData.length; i++) {
-      const v = (timeData[i] - 128) / 128;
-      sum += v * v;
-    }
-    const rms = Math.sqrt(sum / timeData.length) * 100;
-
-    const freqData = new Uint8Array(analyser.frequencyBinCount);
-    analyser.getByteFrequencyData(freqData);
-    let freqSum = 0;
-    for (let i = 0; i < freqData.length; i++) freqSum += freqData[i];
-    const freqAvg = freqSum / freqData.length;
-
-    return Math.max(rms * 1.4, freqAvg * 0.35);
-  }
-
-  function trimOldChunks() {
-    const cutoff = Date.now() - BUFFER_KEEP_MS;
-    chunkLog = chunkLog.filter((c) => c.t >= cutoff);
-  }
-
-  function buildBlobFromWindow(startTime, endTime) {
-    const blobs = chunkLog
-      .filter((c) => c.t >= startTime && c.t <= endTime)
-      .map((c) => c.blob);
-
-    if (!blobs.length) return null;
-
-    const mime = mediaRecorder?.mimeType || "audio/webm";
-    return new Blob(blobs, { type: mime });
-  }
-
-  function clearFinalizeTimer() {
-    if (finalizeTimer) {
-      clearTimeout(finalizeTimer);
-      finalizeTimer = null;
+    els.micLevel.classList.toggle("loud", rms > MIN_RMS);
+    if (rms > MIN_RMS) {
+      els.audioHint.textContent = "✓ Hearing audio";
+      els.audioHint.className = "mic-label audio-ok";
+    } else {
+      els.audioHint.textContent = "No audio yet";
+      els.audioHint.className = "mic-label audio-bad";
     }
   }
 
-  function scheduleFinalize() {
-    clearFinalizeTimer();
-    const waitMs = settings.silenceMs + POST_ROLL_MS;
+  function encodeWav(samples, sampleRate) {
+    const numSamples = samples.length;
+    const buffer = new ArrayBuffer(44 + numSamples * 2);
+    const view = new DataView(buffer);
 
-    finalizeTimer = setTimeout(() => {
-      if (!isListening) return;
-      const now = Date.now();
-      const silentFor = lastSpeechAt ? now - lastSpeechAt : Infinity;
+    function writeStr(offset, str) {
+      for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+    }
 
-      if (silentFor >= settings.silenceMs && speechWindowStart) {
-        triggerProcessWindow();
-      }
-    }, waitMs);
+    writeStr(0, "RIFF");
+    view.setUint32(4, 36 + numSamples * 2, true);
+    writeStr(8, "WAVE");
+    writeStr(12, "fmt ");
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeStr(36, "data");
+    view.setUint32(40, numSamples * 2, true);
+
+    let offset = 44;
+    for (let i = 0; i < numSamples; i++) {
+      const s = Math.max(-1, Math.min(1, samples[i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      offset += 2;
+    }
+    return new Blob([buffer], { type: "audio/wav" });
+  }
+
+  function mergeSamples(chunks) {
+    let total = 0;
+    for (const c of chunks) total += c.length;
+    const out = new Float32Array(total);
+    let pos = 0;
+    for (const c of chunks) {
+      out.set(c, pos);
+      pos += c.length;
+    }
+    return out;
   }
 
   async function checkServer() {
-    setServerBadge("checking", "Checking…");
-    els.listenBtn.disabled = true;
+    els.badge.className = "badge checking";
+    els.badge.textContent = "Checking…";
+    els.startBtn.disabled = true;
 
     try {
       const res = await fetch("/api/health");
       const data = await res.json();
-
       if (!data.apiConfigured) {
         serverReady = false;
-        setServerBadge("error", "No API key");
-        setStatus("error", "Add OPENAI_API_KEY in Vercel or .env on laptop");
+        els.badge.className = "badge error";
+        els.badge.textContent = "No API key";
+        setStatus("error", "Add OPENAI_API_KEY to .env or Vercel settings");
         return;
       }
-
       serverReady = true;
-      setServerBadge("ready", "Ready");
-      els.listenBtn.disabled = false;
-      setStatus("idle", "Tap START — records every word continuously");
+      els.badge.className = "badge ready";
+      els.badge.textContent = "Ready";
+      els.startBtn.disabled = false;
+      setStatus("idle", "Click START → share Meet/Zoom tab with audio ON");
     } catch {
       serverReady = false;
-      setServerBadge("error", "Offline");
-      setStatus("error", "Cannot reach server");
+      els.badge.className = "badge error";
+      els.badge.textContent = "Offline";
+      setStatus("error", "Server not running — run start.bat or check Vercel");
     }
   }
 
-  async function transcribeBlob(blob) {
+  async function transcribeWav(wavBlob) {
     const form = new FormData();
-    form.append("audio", blob, "recording.webm");
+    form.append("audio", wavBlob, "audio.wav");
     form.append("language", "en");
-
-    const prompt = fullTranscript.slice(-220) || "Job interview. Interviewer asks a question.";
-    form.append("prompt", prompt);
+    form.append("prompt", fullTranscript.slice(-220) || "Job interview. Interviewer asks a question.");
 
     const res = await fetch("/api/transcribe", { method: "POST", body: form });
-    const data = await res.json().catch(() => ({}));
-
+    const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Transcription failed");
     return (data.text || "").trim();
   }
 
-  function shouldSkipAnswer(text) {
-    if (!text) return true;
-    const low = text.toLowerCase().replace(/\s+/g, " ").trim();
-    const prev = lastAnsweredText.toLowerCase().replace(/\s+/g, " ").trim();
-    if (!prev) return false;
-    if (low === prev) return true;
-    if (low.length < prev.length + 12 && prev.includes(low)) return true;
-    return false;
-  }
-
-  async function processWindow(startTime, endTime) {
-    const blob = buildBlobFromWindow(startTime, endTime);
-    if (!blob || blob.size < MIN_AUDIO_BYTES) return;
-
-    isProcessing = true;
-    setStatus("processing", "Transcribing full audio capture…");
-
-    try {
-      const text = await transcribeBlob(blob);
-
-      if (!text || text.length < 2) {
-        if (isListening) setStatus("listening", "Recording — turn up laptop volume");
-        return;
-      }
-
-      mergeTranscript(text);
-      updateTranscriptDisplay();
-
-      if (shouldSkipAnswer(fullTranscript)) {
-        if (isListening) setStatus("listening", "Recording — captured words, waiting for new question");
-        return;
-      }
-
-      setStatus("processing", "Analyzing full question & answering…");
-      await sendRawTranscript(fullTranscript);
-      lastAnsweredText = fullTranscript;
-    } catch (err) {
-      console.error(err);
-      setStatus("error", err.message);
-      setTimeout(() => {
-        if (isListening) setStatus("listening", "Still recording — every word captured");
-      }, 2000);
-    } finally {
-      isProcessing = false;
-
-      if (pendingProcess) {
-        pendingProcess = false;
-        triggerProcessWindow();
-      }
-    }
-  }
-
-  function triggerProcessWindow() {
-    if (!speechWindowStart) return;
-
-    const endTime = Date.now();
-    const startTime = Math.max(speechWindowStart - PRE_ROLL_MS, sessionStartedAt);
-    const windowMs = endTime - startTime;
-
-    speechWindowStart = 0;
-    lastSpeechAt = 0;
-    clearFinalizeTimer();
-
-    if (windowMs < 600) return;
-
-    if (isProcessing) {
-      pendingProcess = true;
+  function mergeText(newText) {
+    if (!newText) return;
+    if (!fullTranscript) {
+      fullTranscript = newText;
       return;
     }
-
-    processWindow(startTime, endTime);
-  }
-
-  function checkVoiceActivity() {
-    if (!isListening || !analyser) return;
-
-    const volume = readVolume();
-    const now = Date.now();
-    updateMicLevel(volume);
-    trimOldChunks();
-
-    if (volume > VOLUME_THRESHOLD) {
-      if (!speechWindowStart) {
-        speechWindowStart = now;
-      }
-      lastSpeechAt = now;
-      clearFinalizeTimer();
-      return;
-    }
-
-    if (!speechWindowStart || !lastSpeechAt) return;
-
-    const silentFor = now - lastSpeechAt;
-    const windowAge = now - speechWindowStart;
-
-    if (silentFor >= settings.silenceMs) {
-      scheduleFinalize();
-    }
-
-    if (windowAge >= MAX_SEGMENT_MS) {
-      triggerProcessWindow();
+    const a = fullTranscript.toLowerCase();
+    const b = newText.toLowerCase();
+    if (b.length >= a.length && (b.includes(a) || newText.length > fullTranscript.length + 8)) {
+      fullTranscript = newText;
+    } else if (!a.includes(b)) {
+      fullTranscript = fullTranscript.trim() + " " + newText;
     }
   }
 
-  async function startContinuousListening() {
-    if (!navigator.mediaDevices?.getUserMedia) {
-      alert("Microphone not supported in this browser.");
-      return;
-    }
-
-    mediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: true,
-        channelCount: 1,
-      },
-    });
-
-    audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    if (audioContext.state === "suspended") {
-      await audioContext.resume();
-    }
-
-    analyser = audioContext.createAnalyser();
-    analyser.fftSize = 2048;
-    analyser.smoothingTimeConstant = 0.2;
-    const source = audioContext.createMediaStreamSource(mediaStream);
-    source.connect(analyser);
-
-    const mimeType = getSupportedMimeType();
-    const options = { audioBitsPerSecond: 128000 };
-    if (mimeType) options.mimeType = mimeType;
-
-    mediaRecorder = MediaRecorder.isTypeSupported(mimeType || "")
-      ? new MediaRecorder(mediaStream, options)
-      : new MediaRecorder(mediaStream);
-
-    chunkLog = [];
-    sessionStartedAt = Date.now();
-    speechWindowStart = 0;
-    lastSpeechAt = 0;
-
-    mediaRecorder.ondataavailable = (event) => {
-      if (event.data.size > 0) {
-        chunkLog.push({ t: Date.now(), blob: event.data });
-      }
-    };
-
-    mediaRecorder.start(RECORD_SLICE_MS);
-
-    isListening = true;
-    setMainButton(true);
-    showMicMeter(true);
-    setStatus("listening", "Recording ALL words — nothing skipped");
-    vadTimer = setInterval(checkVoiceActivity, 80);
-  }
-
-  function stopContinuousListening() {
-    if (vadTimer) {
-      clearInterval(vadTimer);
-      vadTimer = null;
-    }
-
-    clearFinalizeTimer();
-
-    if (speechWindowStart && lastSpeechAt) {
-      triggerProcessWindow();
-    }
-
-    if (mediaRecorder && mediaRecorder.state !== "inactive") {
-      try {
-        mediaRecorder.stop();
-      } catch {}
-    }
-
-    mediaRecorder = null;
-    chunkLog = [];
-
-    if (mediaStream) {
-      mediaStream.getTracks().forEach((t) => t.stop());
-      mediaStream = null;
-    }
-
-    if (audioContext) {
-      audioContext.close().catch(() => {});
-      audioContext = null;
-    }
-
-    analyser = null;
-    showMicMeter(false);
-  }
-
-  async function forceProcessNow() {
-    if (!isListening || !chunkLog.length) {
-      if (fullTranscript) sendQuestion(fullTranscript);
-      return;
-    }
-
-    const endTime = Date.now();
-    const startTime = speechWindowStart
-      ? Math.max(speechWindowStart - PRE_ROLL_MS, sessionStartedAt)
-      : Math.max(endTime - 30000, sessionStartedAt);
-
-    if (isProcessing) {
-      pendingProcess = true;
-      return;
-    }
-
-    await processWindow(startTime, endTime);
-  }
-
-  async function sendRawTranscript(text) {
+  async function streamAnswer(text) {
     els.answer.textContent = "";
     els.answer.classList.remove("empty");
 
-    const response = await fetch("/api/chat", {
+    const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -493,17 +209,18 @@
         context: settings.context,
         model: settings.model,
         rawTranscript: true,
+        detailed: true,
       }),
     });
 
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({}));
-      throw new Error(err.error || "Server error " + response.status);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || "Answer failed");
     }
 
-    setStatus("processing", "Answer streaming…");
+    setStatus("processing", "Writing detailed answer…");
 
-    const reader = response.body.getReader();
+    const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
     let fullAnswer = "";
@@ -521,7 +238,6 @@
         if (!trimmed.startsWith("data:")) continue;
         const data = trimmed.slice(5).trim();
         if (data === "[DONE]") continue;
-
         try {
           const json = JSON.parse(data);
           const delta = json.choices?.[0]?.delta?.content;
@@ -534,63 +250,172 @@
       }
     }
 
-    if (!fullAnswer.trim()) {
-      els.answer.textContent = "Could not generate answer. Tap Process Now to retry.";
-    } else if (fullAnswer.toLowerCase().includes("still listening")) {
-      setStatus("listening", "Recording — need more words, keep listening");
-    } else if (isListening) {
-      setStatus("listening", "Answer ready — still recording every word");
+    return fullAnswer;
+  }
+
+  async function processSamples(chunks, sampleRate) {
+    if (!chunks.length || isProcessing) return;
+
+    const merged = mergeSamples(chunks);
+    if (merged.length < MIN_SAMPLES) return;
+
+    const wav = encodeWav(merged, sampleRate);
+    if (wav.size < 3000) return;
+
+    isProcessing = true;
+    setStatus("processing", "Transcribing what interviewer said…");
+
+    try {
+      const text = await transcribeWav(wav);
+      if (!text || text.length < 2) {
+        setStatus("listening", "Listening… (no speech in last clip)");
+        return;
+      }
+
+      mergeText(text);
+      els.transcript.textContent = fullTranscript;
+      els.transcript.classList.remove("empty");
+
+      if (fullTranscript === lastAnswered) {
+        setStatus("listening", "Listening for next question…");
+        return;
+      }
+
+      setStatus("processing", "Generating detailed answer…");
+      await streamAnswer(fullTranscript);
+      lastAnswered = fullTranscript;
+      setStatus("listening", "Answer ready — listening for next question");
+    } catch (err) {
+      console.error(err);
+      setStatus("error", err.message);
+      setTimeout(() => {
+        if (isRunning) setStatus("listening", "Still listening…");
+      }, 2500);
+    } finally {
+      isProcessing = false;
     }
   }
 
-  async function sendQuestion(text) {
-    if (!text || isProcessing || !serverReady) return;
+  function flushBuffer(force) {
+    if (!sampleBuffer.length || !audioContext) return;
+    const silentFor = Date.now() - lastSoundAt;
+    if (!force && silentFor < SILENCE_MS) return;
+    if (!force && lastSoundAt === 0) return;
 
-    isProcessing = true;
-    setStatus("processing", "Analyzing & answering…");
-    els.askBtn.disabled = true;
+    const chunks = sampleBuffer.slice();
+    sampleBuffer = [];
+    const rate = audioContext.sampleRate;
+    if (!force) lastSoundAt = 0;
+    processSamples(chunks, rate);
+  }
 
-    try {
-      await sendRawTranscript(text);
-      lastAnsweredText = text;
-    } catch (err) {
-      console.error(err);
-      els.answer.textContent = "Error: " + err.message;
-      setStatus("error", "Request failed");
-    } finally {
-      isProcessing = false;
-      updateTranscriptDisplay();
+  async function getAudioStream() {
+    if (captureMode === "mic") {
+      return navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true },
+      });
     }
+
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: { width: 320, height: 240, frameRate: 1 },
+      audio: true,
+    });
+
+    els.hiddenVideo.srcObject = stream;
+    await els.hiddenVideo.play().catch(() => {});
+
+    if (!stream.getAudioTracks().length) {
+      throw new Error(
+        captureMode === "tab"
+          ? 'No audio! Pick the Meet/Zoom TAB and enable "Share tab audio".'
+          : 'No audio! Pick screen and enable "Share system audio".'
+      );
+    }
+
+    return stream;
   }
 
   async function startListening() {
     if (!serverReady) {
-      alert("Server not ready. Check Vercel deploy or run start.bat locally.");
+      alert("Add OPENAI_API_KEY first (Settings or .env file)");
       return;
     }
 
+    displayStream = await getAudioStream();
+
+    audioContext = new AudioContext({ sampleRate: 48000 });
+    if (audioContext.state === "suspended") await audioContext.resume();
+
+    const source = audioContext.createMediaStreamSource(displayStream);
+    processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+    sampleBuffer = [];
+    lastSoundAt = 0;
     fullTranscript = "";
-    lastAnsweredText = "";
-    pendingProcess = false;
-    updateTranscriptDisplay();
-    els.answer.textContent = "Answer appears after full question is captured…";
+    lastAnswered = "";
+    els.transcript.textContent = "Listening…";
+    els.transcript.classList.remove("empty");
+    els.answer.textContent = "Detailed answer will appear here…";
     els.answer.classList.add("empty");
 
-    try {
-      await startContinuousListening();
-    } catch (err) {
-      console.error(err);
-      stopListening();
-      setStatus("error", "Mic blocked — allow microphone in browser");
-    }
+    processor.onaudioprocess = (e) => {
+      if (!isRunning) return;
+      const input = e.inputBuffer.getChannelData(0);
+      let sum = 0;
+      for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
+      const rms = Math.sqrt(sum / input.length);
+      currentRms = rms;
+      sampleBuffer.push(new Float32Array(input));
+      if (rms > MIN_RMS) lastSoundAt = Date.now();
+
+      let total = 0;
+      for (const c of sampleBuffer) total += c.length;
+      if (total > audioContext.sampleRate * 60) flushBuffer(true);
+    };
+
+    source.connect(processor);
+    processor.connect(audioContext.destination);
+
+    isRunning = true;
+    els.micMeter.classList.remove("hidden");
+    els.startBtn.querySelector(".btn-label").textContent = "STOP";
+    els.startBtn.classList.add("active");
+    els.forceBtn.disabled = false;
+    setStatus("listening", "Hearing interview audio — speak from Meet/Zoom");
+
+    meterTimer = setInterval(() => updateMeter(currentRms), 100);
+    flushTimer = setInterval(() => {
+      if (lastSoundAt > 0 && Date.now() - lastSoundAt >= SILENCE_MS) {
+        flushBuffer(false);
+      }
+    }, 300);
   }
 
   function stopListening() {
-    isListening = false;
-    stopContinuousListening();
-    setMainButton(false);
-    setStatus("idle", "Stopped — tap START when ready");
-    updateTranscriptDisplay();
+    isRunning = false;
+    if (flushTimer) { clearInterval(flushTimer); flushTimer = null; }
+    if (meterTimer) { clearInterval(meterTimer); meterTimer = null; }
+    flushBuffer(true);
+
+    if (processor) {
+      processor.disconnect();
+      processor.onaudioprocess = null;
+      processor = null;
+    }
+    if (audioContext) {
+      audioContext.close().catch(() => {});
+      audioContext = null;
+    }
+    if (displayStream) {
+      displayStream.getTracks().forEach((t) => t.stop());
+      displayStream = null;
+    }
+    els.hiddenVideo.srcObject = null;
+    els.micMeter.classList.add("hidden");
+    els.startBtn.querySelector(".btn-label").textContent = "START — Listen & Answer";
+    els.startBtn.classList.remove("active");
+    els.forceBtn.disabled = true;
+    setStatus("idle", "Stopped");
   }
 
   function openSettings() {
@@ -598,42 +423,36 @@
     els.settingsOverlay.classList.remove("hidden");
   }
 
-  function closeSettingsPanel() {
+  function closeSettings() {
     els.settingsOverlay.classList.add("hidden");
   }
 
-  els.listenBtn.addEventListener("click", () => {
-    if (isListening) stopListening();
-    else startListening();
-  });
+  els.modeTab.addEventListener("click", () => setMode("tab"));
+  els.modeScreen.addEventListener("click", () => setMode("screen"));
+  els.modeMic.addEventListener("click", () => setMode("mic"));
 
-  els.askBtn.addEventListener("click", () => {
-    forceProcessNow();
-  });
-
-  els.settingsBtn.addEventListener("click", openSettings);
-  els.closeSettings.addEventListener("click", closeSettingsPanel);
-  els.settingsOverlay.addEventListener("click", (e) => {
-    if (e.target === els.settingsOverlay) closeSettingsPanel();
-  });
-
-  els.saveSettings.addEventListener("click", () => {
-    saveSettingsToStorage();
-    closeSettingsPanel();
-    setStatus("idle", "Settings saved");
-  });
-
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden && isListening) {
-      setStatus("listening", "Keep screen ON — recording stops in background");
+  els.startBtn.addEventListener("click", async () => {
+    if (isRunning) { stopListening(); return; }
+    try {
+      await startListening();
+    } catch (err) {
+      alert(err.message);
+      setStatus("error", err.message);
     }
   });
 
-  applySettingsToForm();
-  setMainButton(false);
-  checkServer();
+  els.forceBtn.addEventListener("click", () => flushBuffer(true));
+  els.settingsBtn.addEventListener("click", openSettings);
+  els.closeSettings.addEventListener("click", closeSettings);
+  els.settingsOverlay.addEventListener("click", (e) => {
+    if (e.target === els.settingsOverlay) closeSettings();
+  });
+  els.saveSettings.addEventListener("click", () => {
+    saveSettingsToStorage();
+    closeSettings();
+    setStatus("idle", "Settings saved");
+  });
 
-  if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("sw.js").catch(() => {});
-  }
+  applySettingsToForm();
+  checkServer();
 })();

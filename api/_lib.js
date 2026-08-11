@@ -4,21 +4,12 @@ export function cors(res) {
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
 }
 
-const sessions = globalThis.__sessions || (globalThis.__sessions = new Map());
-
-export function getSession(id) {
-  return sessions.get(id) || null;
-}
-
-export function setSession(id, data) {
-  sessions.set(id, { ...data, updatedAt: Date.now() });
-}
-
 export function buildChatPayload(body) {
   const question = (body.question || "").trim();
   const context = (body.context || "").trim();
   const model = (body.model || process.env.OPENAI_MODEL || "gpt-4o-mini").trim();
   const rawTranscript = Boolean(body.rawTranscript);
+  const detailed = Boolean(body.detailed);
 
   if (!question) {
     return { error: "No question provided", status: 400 };
@@ -26,21 +17,36 @@ export function buildChatPayload(body) {
 
   let systemPrompt;
   let userContent;
+  let maxTokens = 350;
 
   if (rawTranscript) {
     systemPrompt =
-      "Expert interview assistant. You receive a transcript from a live job interview.\n\n" +
+      "You are an expert interview coach. The candidate is in a LIVE job interview on their laptop.\n\n" +
+      "You receive a transcript of what the interviewer said.\n\n" +
       "YOUR JOB:\n" +
-      "1. Identify the interviewer's question.\n" +
-      "2. If unclear, reply ONLY: Still listening — no clear question yet.\n" +
-      "3. If found, start with: **Question:** <question>\n" +
-      "4. Then give an accurate spoken answer (4-8 sentences). Be precise.\n" +
-      "5. For technical/coding questions include steps or short code.";
-    userContent = `Interview transcript:\n\n${question}`;
+      "1. Identify the interviewer's exact question from the transcript.\n" +
+      "2. If no clear question yet, reply ONLY: Still listening — no clear question yet.\n" +
+      "3. If a question is found, write:\n" +
+      "   **Question:** <the question>\n\n" +
+      "   **Answer to say aloud:**\n" +
+      "   A detailed, accurate answer the candidate can speak (8-12 sentences).\n\n" +
+      "   **Key points:**\n" +
+      "   - Bullet the most important facts\n\n" +
+      "   **If technical/coding:** include step-by-step approach and code if needed.\n\n" +
+      "Be thorough, factual, and personalized to the candidate's background. " +
+      "Do not say 'As an AI'. Write naturally.";
+
+    if (detailed) {
+      maxTokens = 1200;
+    } else {
+      maxTokens = 700;
+    }
+
+    userContent = `Interview audio transcript:\n\n${question}`;
   } else {
-    systemPrompt =
-      "Interview coach. Give a concise spoken answer. No filler. Start immediately.";
+    systemPrompt = "Interview coach. Give a clear detailed answer. No filler.";
     userContent = question;
+    maxTokens = 600;
   }
 
   if (context) {
@@ -51,8 +57,8 @@ export function buildChatPayload(body) {
     payload: {
       model,
       stream: true,
-      temperature: 0.2,
-      max_tokens: rawTranscript ? 600 : 350,
+      temperature: 0.3,
+      max_tokens: maxTokens,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userContent },

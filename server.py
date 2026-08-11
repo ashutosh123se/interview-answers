@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
 """Interview Assistant — local server with secure OpenAI proxy."""
 
-import json
 import os
-import random
-import string
 import socket
-import time
 import webbrowser
 from pathlib import Path
 
@@ -22,11 +18,6 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 DEFAULT_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
 
 app = Flask(__name__, static_folder=str(ROOT))
-SESSIONS = {}
-
-
-def make_session_id():
-    return "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
 
 def build_chat_messages(body):
@@ -34,28 +25,34 @@ def build_chat_messages(body):
     context = (body.get("context") or "").strip()
     model = (body.get("model") or DEFAULT_MODEL).strip()
     raw_transcript = bool(body.get("rawTranscript"))
+    detailed = bool(body.get("detailed"))
 
     if not question:
         return None, None, None, "No question provided"
 
     if raw_transcript:
         system_prompt = (
-            "Expert interview assistant. You receive a transcript from a live job interview.\n\n"
+            "You are an expert interview coach. The candidate is in a LIVE job interview on their laptop.\n\n"
+            "You receive a transcript of what the interviewer said.\n\n"
             "YOUR JOB:\n"
-            "1. Identify the interviewer's question.\n"
-            "2. If unclear, reply ONLY: Still listening — no clear question yet.\n"
-            "3. If found, start with: **Question:** <question>\n"
-            "4. Then give an accurate spoken answer (4-8 sentences). Be precise.\n"
-            "5. For technical/coding questions include steps or short code."
+            "1. Identify the interviewer's exact question from the transcript.\n"
+            "2. If no clear question yet, reply ONLY: Still listening — no clear question yet.\n"
+            "3. If a question is found, write:\n"
+            "   **Question:** <the question>\n\n"
+            "   **Answer to say aloud:**\n"
+            "   A detailed, accurate answer the candidate can speak (8-12 sentences).\n\n"
+            "   **Key points:**\n"
+            "   - Bullet the most important facts\n\n"
+            "   **If technical/coding:** include step-by-step approach and code if needed.\n\n"
+            "Be thorough, factual, and personalized to the candidate's background. "
+            "Do not say 'As an AI'. Write naturally."
         )
-        user_content = f"Interview transcript:\n\n{question}"
-        max_tokens = 600
+        user_content = f"Interview audio transcript:\n\n{question}"
+        max_tokens = 1200 if detailed else 700
     else:
-        system_prompt = (
-            "Interview coach. Give a concise spoken answer. No filler. Start immediately."
-        )
+        system_prompt = "Interview coach. Give a clear detailed answer. No filler."
         user_content = question
-        max_tokens = 350
+        max_tokens = 600
 
     if context:
         system_prompt += f"\n\nCandidate background:\n{context}"
@@ -63,7 +60,7 @@ def build_chat_messages(body):
     payload = {
         "model": model,
         "stream": body.get("stream", True),
-        "temperature": 0.2,
+        "temperature": 0.3,
         "max_tokens": max_tokens,
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -167,96 +164,6 @@ def transcribe():
     return jsonify({"text": text})
 
 
-@app.route("/api/session/create", methods=["POST", "OPTIONS"])
-def session_create():
-    if request.method == "OPTIONS":
-        return ("", 204)
-
-    body = request.get_json(silent=True) or {}
-    sid = make_session_id()
-    SESSIONS[sid] = {
-        "transcript": "",
-        "answer": "",
-        "status": "waiting",
-        "context": (body.get("context") or "").strip(),
-        "model": body.get("model") or DEFAULT_MODEL,
-        "updatedAt": int(time.time() * 1000),
-    }
-    return jsonify({"id": sid})
-
-
-@app.route("/api/session/<sid>", methods=["GET", "POST", "OPTIONS"])
-def session_handler(sid):
-    if request.method == "OPTIONS":
-        return ("", 204)
-
-    sid = sid.upper()
-
-    if request.method == "GET":
-        session = SESSIONS.get(sid)
-        if not session:
-            return jsonify({"error": "Session not found"}), 404
-        return jsonify({"id": sid, **session})
-
-    body = request.get_json(silent=True) or {}
-    existing = SESSIONS.get(sid) or {
-        "transcript": "",
-        "answer": "",
-        "status": "waiting",
-        "context": "",
-        "model": DEFAULT_MODEL,
-    }
-    SESSIONS[sid] = {
-        **existing,
-        "transcript": body.get("transcript", existing["transcript"]),
-        "answer": body.get("answer", existing["answer"]),
-        "status": body.get("status", existing["status"]),
-        "context": body.get("context", existing["context"]),
-        "model": body.get("model", existing["model"]),
-        "updatedAt": int(time.time() * 1000),
-    }
-    return jsonify({"ok": True})
-
-
-@app.route("/api/chat-sync", methods=["POST", "OPTIONS"])
-def chat_sync():
-    if request.method == "OPTIONS":
-        return ("", 204)
-
-    if not OPENAI_API_KEY:
-        return jsonify({"error": "OPENAI_API_KEY missing"}), 500
-
-    body = request.get_json(silent=True) or {}
-    body["stream"] = False
-    payload, _, _, err = build_chat_messages(body)
-    if err:
-        return jsonify({"error": err}), 400
-
-    try:
-        upstream = requests.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENAI_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=60,
-        )
-    except requests.RequestException as exc:
-        return jsonify({"error": f"Network error: {exc}"}), 502
-
-    if upstream.status_code != 200:
-        try:
-            err_body = upstream.json()
-            message = err_body.get("error", {}).get("message", upstream.text)
-        except Exception:
-            message = upstream.text
-        return jsonify({"error": message}), upstream.status_code
-
-    text = upstream.json()["choices"][0]["message"]["content"]
-    return jsonify({"text": text})
-
-
 @app.route("/api/chat", methods=["POST", "OPTIONS"])
 def chat():
     if request.method == "OPTIONS":
@@ -307,8 +214,7 @@ if __name__ == "__main__":
     url = f"http://{ip}:{PORT}"
 
     print("\n  Interview Assistant\n")
-    print(f"  Laptop listener: {url}/listener.html")
-    print(f"  Phone display:   {url}/display.html\n")
+    print(f"  Open in Chrome: {url}\n")
 
     if OPENAI_API_KEY:
         print("  API key: loaded from .env")

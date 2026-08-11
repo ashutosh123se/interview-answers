@@ -6,33 +6,110 @@
   <title>Interview Assistant</title>
   <link rel="stylesheet" href="styles.css" />
   <style>
-    .cards { display: flex; flex-direction: column; gap: 12px; padding: 16px; }
-    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 20px; }
-    .card h2 { font-size: 1.1rem; margin-bottom: 8px; }
-    .card p { font-size: 0.9rem; color: var(--muted); line-height: 1.5; margin-bottom: 14px; }
-    .card .btn { width: 100%; text-decoration: none; display: block; text-align: center; }
-    .warn { background: rgba(251,191,36,0.1); border: 1px solid rgba(251,191,36,0.3); border-radius: 12px; padding: 14px; margin: 0 16px 12px; font-size: 0.85rem; line-height: 1.5; color: var(--muted); }
+    .hero-box {
+      background: rgba(56,189,248,0.1);
+      border: 1px solid rgba(56,189,248,0.3);
+      border-radius: 12px;
+      padding: 14px 16px;
+      margin: 0 16px 12px;
+      font-size: 0.88rem;
+      line-height: 1.6;
+    }
+    .mode-btns { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+    .mode-btns button {
+      flex: 1; min-width: 130px; padding: 10px; border-radius: 10px;
+      border: 1px solid var(--border); background: var(--surface);
+      color: var(--text); cursor: pointer; font-size: 0.85rem;
+    }
+    .mode-btns button.active {
+      border-color: var(--accent);
+      background: rgba(56,189,248,0.15);
+      color: var(--accent);
+    }
+    #hidden-video { position: fixed; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+    .audio-ok { color: var(--success); }
+    .audio-bad { color: var(--danger); }
+    .answer { font-size: 1rem; }
+    main { max-width: 900px; margin: 0 auto; width: 100%; }
   </style>
 </head>
 <body>
+  <video id="hidden-video" muted playsinline></video>
+
   <div id="app">
-    <header><h1>Interview Assistant</h1></header>
-    <div class="warn">
-      <strong>Important:</strong> Phone mic cannot hear laptop speaker reliably.
-      Use <strong>Laptop Listener</strong> to capture Meet/Zoom tab audio directly.
-    </div>
-    <div class="cards">
-      <div class="card">
-        <h2>1. Laptop (Listener)</h2>
-        <p>Run on laptop during interview. Shares Meet/Zoom tab audio — hears every word clearly.</p>
-        <a href="listener.html" class="btn primary">Open Laptop Listener</a>
+    <header>
+      <div class="header-left">
+        <h1>Interview Assistant</h1>
+        <span id="server-badge" class="badge checking">Checking…</span>
       </div>
-      <div class="card">
-        <h2>2. Phone (Answers)</h2>
-        <p>Enter session ID from laptop. Shows questions heard and AI answers.</p>
-        <a href="display.html" class="btn secondary">Open Phone Display</a>
+      <button id="settings-btn" class="icon-btn" aria-label="Settings">⚙️</button>
+    </header>
+
+    <div class="hero-box">
+      Runs on your <strong>laptop only</strong>. Join interview in Chrome, click START, share Meet/Zoom tab with
+      <strong>tab audio ON</strong>. This page hears the interviewer and shows detailed answers here.
+    </div>
+
+    <main>
+      <section id="status-bar" class="status idle">
+        <span id="status-dot"></span>
+        <div class="status-body">
+          <span id="status-text">Click START to begin</span>
+          <div id="mic-meter" class="mic-meter hidden">
+            <span class="mic-label">Audio</span>
+            <div class="mic-track"><div id="mic-level" class="mic-fill"></div></div>
+            <span id="audio-hint" class="mic-label"></span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Audio source</h2>
+        <div class="mode-btns">
+          <button type="button" id="mode-tab" class="active">Meet / Zoom Tab</button>
+          <button type="button" id="mode-screen">Entire Screen</button>
+          <button type="button" id="mode-mic">Laptop Mic</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Interviewer said</h2>
+        <p id="transcript" class="transcript empty">Waiting for interview audio…</p>
+      </section>
+
+      <section class="panel answer-panel">
+        <h2>Detailed answer</h2>
+        <div id="answer" class="answer empty">Detailed answer will appear here automatically.</div>
+      </section>
+
+      <section id="controls">
+        <button id="start-btn" class="btn hero primary" disabled>
+          <span class="btn-icon">▶</span>
+          <span class="btn-label">START — Listen & Answer</span>
+        </button>
+        <button id="force-btn" class="btn secondary" disabled>Process Now</button>
+      </section>
+    </main>
+
+    <div id="settings-overlay" class="overlay hidden">
+      <div class="settings-sheet">
+        <div class="settings-header">
+          <h2>Settings</h2>
+          <button id="close-settings" class="icon-btn">✕</button>
+        </div>
+        <p class="info-box">Add <code>OPENAI_API_KEY</code> in Vercel env vars or local <code>.env</code> file.</p>
+        <label for="model">AI Model</label>
+        <select id="model">
+          <option value="gpt-4o-mini">gpt-4o-mini (fast)</option>
+          <option value="gpt-4o">gpt-4o (best quality)</option>
+        </select>
+        <label for="context">Your background (job role, skills, projects)</label>
+        <textarea id="context" rows="5" placeholder="e.g. React developer, 2 years exp, worked on e-commerce app with Redux, Node.js…"></textarea>
+        <button id="save-settings" class="btn primary">Save</button>
       </div>
     </div>
   </div>
+
+  <script src="app.js"></script>
 </body>
 </html>

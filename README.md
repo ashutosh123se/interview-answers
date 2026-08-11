@@ -1,74 +1,49 @@
 # Interview Assistant
 
-Phone app that listens to interview questions and shows AI answers in real time.
+Laptop-only interview helper. Hears the interviewer directly from your Meet/Zoom tab and shows **detailed answers** on the same page.
 
-Works **locally** (laptop + phone on same Wi‑Fi) or **online** via Vercel (phone opens HTTPS URL anywhere).
+## How it works
 
-## Deploy to Vercel (recommended for phone)
+```
+Meet/Zoom (Chrome) → Share tab audio → This website hears it → Whisper AI → Detailed answer on screen
+```
 
-### 1. Push to GitHub
+Everything runs on your **laptop** — no phone needed.
 
-Already at: [github.com/ashutosh123se/interview-answers](https://github.com/ashutosh123se/interview-answers)
+## Setup
 
-### 2. Import on Vercel
+### Vercel (online)
+1. Import [github.com/ashutosh123se/interview-answers](https://github.com/ashutosh123se/interview-answers) on [vercel.com](https://vercel.com)
+2. Add env var: `OPENAI_API_KEY=sk-...`
+3. Open your Vercel URL
 
-1. Go to [vercel.com/new](https://vercel.com/new)
-2. Import **ashutosh123se/interview-answers**
-3. Click **Deploy** (no build command needed)
+### Local
+1. Run `setup.bat`, add API key to `.env`
+2. Run `start.bat`
+3. Open `http://localhost:8080`
 
-### 3. Add environment variable on Vercel
+## During interview
 
-In Vercel → Project → **Settings → Environment Variables**:
+1. Join Meet/Zoom in **Chrome** (browser tab)
+2. Open this app in another Chrome tab/window
+3. Settings → add your job role, skills, projects
+4. Click **START — Listen & Answer**
+5. Select your **Meet/Zoom tab** → check **"Share tab audio"**
+6. Audio meter should move when interviewer speaks
+7. Read **detailed answers** on the same page
 
-| Key | Value |
-|-----|--------|
-| `OPENAI_API_KEY` | Your OpenAI key (`sk-proj-...`) |
-| `OPENAI_MODEL` | `gpt-4o-mini` (optional) |
+## Audio modes
 
-Turn **Sensitive** ON. Redeploy after adding.
+| Mode | Use when |
+|------|----------|
+| Meet/Zoom Tab | Interview in Chrome tab (recommended) |
+| Entire Screen | Zoom desktop app — share screen + system audio |
+| Laptop Mic | Fallback — uses laptop microphone |
 
-### 4. Open on phone
+## Tips
 
-Open your Vercel URL on your phone (e.g. `https://interview-answers.vercel.app`):
-
-- HTTPS = mic works properly on phone
-- No laptop server needed
-- Works on any Wi‑Fi / mobile data
-
----
-
-## Local setup (alternative)
-
-### 1. Setup
-
-Double-click **`setup.bat`**, then add API key to **`.env`**
-
-### 2. Run
-
-Double-click **`start.bat`**, open the local URL on your phone (same Wi‑Fi)
-
----
-
-## How to use
-
-1. Open app on phone (Vercel URL or local URL)
-2. Allow **microphone**
-3. Settings → add your **job role & skills**
-4. Tap **▶ START — Grab All & Answer**
-5. Place phone near laptop speaker during interview
-6. Read answers on phone
-
----
-
-## Files
-
-| File | Purpose |
-|------|---------|
-| `api/` | Vercel serverless API (chat, transcribe, health) |
-| `vercel.json` | Vercel config |
-| `server.py` | Local Flask server (optional) |
-| `app.js` | Phone UI + continuous audio capture |
-
-## Security
-
-Never commit `.env`. Add `OPENAI_API_KEY` only in Vercel dashboard or local `.env`.
+- Use **Chrome** only
+- Keep **tab audio** sharing ON
+- Watch the **audio meter** — must move when interviewer speaks
+- Use **Process Now** if auto-detect misses a question
+- Fill in **background** in Settings for personalized answers
