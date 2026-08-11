@@ -76,6 +76,7 @@ def transcribe():
         return jsonify({"error": "No audio uploaded"}), 400
 
     language = (request.form.get("language") or "en").strip()
+    prompt = (request.form.get("prompt") or "Job interview. Interviewer asks a question.").strip()
 
     try:
         upstream = requests.post(
@@ -91,7 +92,7 @@ def transcribe():
             data={
                 "model": "whisper-1",
                 "language": language,
-                "prompt": "Job interview. Interviewer asks a question.",
+                "prompt": prompt,
             },
             timeout=45,
         )

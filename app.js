@@ -2,10 +2,13 @@
   "use strict";
 
   const STORAGE_KEY = "interview_assistant_settings";
-  const VOLUME_THRESHOLD = 8;
-  const MIN_AUDIO_BYTES = 3000;
-  const MAX_SEGMENT_MS = 18000;
-  const RECORD_SLICE_MS = 400;
+  const VOLUME_THRESHOLD = 3;
+  const MIN_AUDIO_BYTES = 800;
+  const MAX_SEGMENT_MS = 90000;
+  const RECORD_SLICE_MS = 200;
+  const PRE_ROLL_MS = 2000;
+  const POST_ROLL_MS = 1800;
+  const BUFFER_KEEP_MS = 120000;
 
   const $ = (id) => document.getElementById(id);
 
@@ -34,18 +37,19 @@
   let isListening = false;
   let isProcessing = false;
   let fullTranscript = "";
-  let lastProcessedText = "";
-  let pendingBlob = null;
+  let lastAnsweredText = "";
+  let pendingProcess = false;
 
   let mediaStream = null;
   let audioContext = null;
   let analyser = null;
   let mediaRecorder = null;
-  let segmentChunks = [];
+  let chunkLog = [];
   let vadTimer = null;
   let lastSpeechAt = 0;
-  let segmentStartedAt = 0;
-  let heardSpeechInSegment = false;
+  let speechWindowStart = 0;
+  let sessionStartedAt = 0;
+  let finalizeTimer = null;
 
   function loadSettings() {
     try {
@@ -60,7 +64,7 @@
       hearingMode: "whisper",
       model: "gpt-4o-mini",
       context: "",
-      silenceMs: 1400,
+      silenceMs: 2800,
     };
   }
 
@@ -69,7 +73,7 @@
       hearingMode: els.hearingMode.value,
       model: els.model.value,
       context: els.context.value.trim(),
-      silenceMs: Number(els.silenceMs.value) || 1400,
+      silenceMs: Number(els.silenceMs.value) || 2800,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
   }
@@ -78,7 +82,7 @@
     els.hearingMode.value = settings.hearingMode || "whisper";
     els.model.value = settings.model || "gpt-4o-mini";
     els.context.value = settings.context || "";
-    els.silenceMs.value = settings.silenceMs || 1400;
+    els.silenceMs.value = settings.silenceMs || 2800;
   }
 
   function setStatus(mode, text) {
@@ -105,15 +109,35 @@
     }
   }
 
-  function setTranscript(text) {
-    fullTranscript = text || "";
-    updateTranscriptDisplay();
+  function mergeTranscript(newText) {
+    const clean = (newText || "").trim();
+    if (!clean) return;
+
+    if (!fullTranscript) {
+      fullTranscript = clean;
+      return;
+    }
+
+    const prev = fullTranscript.trim();
+    const prevLow = prev.toLowerCase();
+    const cleanLow = clean.toLowerCase();
+
+    if (cleanLow === prevLow) return;
+
+    if (cleanLow.startsWith(prevLow) || clean.length > prev.length + 8) {
+      fullTranscript = clean;
+      return;
+    }
+
+    if (prevLow.includes(cleanLow)) return;
+
+    fullTranscript = prev + " " + clean;
   }
 
   function updateTranscriptDisplay() {
     if (!fullTranscript) {
       els.transcript.textContent = isListening
-        ? "Recording all sound — waiting for a question…"
+        ? "Recording every word — speak or play audio near phone…"
         : "Waiting for speech…";
       els.transcript.classList.add("empty");
     } else {
@@ -132,7 +156,7 @@
   }
 
   function updateMicLevel(volume) {
-    const pct = Math.min(100, Math.round((volume / 70) * 100));
+    const pct = Math.min(100, Math.round((volume / 35) * 100));
     els.micLevel.style.width = pct + "%";
     els.micLevel.classList.toggle("loud", volume > VOLUME_THRESHOLD);
   }
@@ -147,24 +171,61 @@
 
   function readVolume() {
     if (!analyser) return 0;
-    const data = new Uint8Array(analyser.frequencyBinCount);
-    analyser.getByteFrequencyData(data);
+
+    const timeData = new Uint8Array(analyser.fftSize);
+    analyser.getByteTimeDomainData(timeData);
     let sum = 0;
-    for (let i = 0; i < data.length; i++) sum += data[i];
-    return sum / data.length;
+    for (let i = 0; i < timeData.length; i++) {
+      const v = (timeData[i] - 128) / 128;
+      sum += v * v;
+    }
+    const rms = Math.sqrt(sum / timeData.length) * 100;
+
+    const freqData = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteFrequencyData(freqData);
+    let freqSum = 0;
+    for (let i = 0; i < freqData.length; i++) freqSum += freqData[i];
+    const freqAvg = freqSum / freqData.length;
+
+    return Math.max(rms * 1.4, freqAvg * 0.35);
   }
 
-  function resetSegment() {
-    segmentChunks = [];
-    heardSpeechInSegment = false;
-    segmentStartedAt = Date.now();
-    lastSpeechAt = 0;
+  function trimOldChunks() {
+    const cutoff = Date.now() - BUFFER_KEEP_MS;
+    chunkLog = chunkLog.filter((c) => c.t >= cutoff);
   }
 
-  function blobFromSegment() {
-    if (!segmentChunks.length) return null;
+  function buildBlobFromWindow(startTime, endTime) {
+    const blobs = chunkLog
+      .filter((c) => c.t >= startTime && c.t <= endTime)
+      .map((c) => c.blob);
+
+    if (!blobs.length) return null;
+
     const mime = mediaRecorder?.mimeType || "audio/webm";
-    return new Blob(segmentChunks, { type: mime });
+    return new Blob(blobs, { type: mime });
+  }
+
+  function clearFinalizeTimer() {
+    if (finalizeTimer) {
+      clearTimeout(finalizeTimer);
+      finalizeTimer = null;
+    }
+  }
+
+  function scheduleFinalize() {
+    clearFinalizeTimer();
+    const waitMs = settings.silenceMs + POST_ROLL_MS;
+
+    finalizeTimer = setTimeout(() => {
+      if (!isListening) return;
+      const now = Date.now();
+      const silentFor = lastSpeechAt ? now - lastSpeechAt : Infinity;
+
+      if (silentFor >= settings.silenceMs && speechWindowStart) {
+        triggerProcessWindow();
+      }
+    }, waitMs);
   }
 
   async function checkServer() {
@@ -178,18 +239,18 @@
       if (!data.apiConfigured) {
         serverReady = false;
         setServerBadge("error", "No API key");
-        setStatus("error", "Add OPENAI_API_KEY to .env on laptop, then restart server");
+        setStatus("error", "Add OPENAI_API_KEY in Vercel or .env on laptop");
         return;
       }
 
       serverReady = true;
       setServerBadge("ready", "Ready");
       els.listenBtn.disabled = false;
-      setStatus("idle", "Tap START — mic grabs ALL sound instantly");
+      setStatus("idle", "Tap START — records every word continuously");
     } catch {
       serverReady = false;
       setServerBadge("error", "Offline");
-      setStatus("error", "Cannot reach server — run start.bat on laptop");
+      setStatus("error", "Cannot reach server");
     }
   }
 
@@ -198,6 +259,9 @@
     form.append("audio", blob, "recording.webm");
     form.append("language", "en");
 
+    const prompt = fullTranscript.slice(-220) || "Job interview. Interviewer asks a question.";
+    form.append("prompt", prompt);
+
     const res = await fetch("/api/transcribe", { method: "POST", body: form });
     const data = await res.json().catch(() => ({}));
 
@@ -205,66 +269,77 @@
     return (data.text || "").trim();
   }
 
-  function isSimilarText(a, b) {
-    if (!a || !b) return false;
-    const na = a.toLowerCase().replace(/[^\w\s]/g, "").trim();
-    const nb = b.toLowerCase().replace(/[^\w\s]/g, "").trim();
-    if (!na || !nb) return false;
-    if (na === nb) return true;
-    return na.includes(nb) || nb.includes(na);
+  function shouldSkipAnswer(text) {
+    if (!text) return true;
+    const low = text.toLowerCase().replace(/\s+/g, " ").trim();
+    const prev = lastAnsweredText.toLowerCase().replace(/\s+/g, " ").trim();
+    if (!prev) return false;
+    if (low === prev) return true;
+    if (low.length < prev.length + 12 && prev.includes(low)) return true;
+    return false;
   }
 
-  async function processSegment(blob) {
+  async function processWindow(startTime, endTime) {
+    const blob = buildBlobFromWindow(startTime, endTime);
     if (!blob || blob.size < MIN_AUDIO_BYTES) return;
 
     isProcessing = true;
-    setStatus("processing", "Transcribing everything heard…");
+    setStatus("processing", "Transcribing full audio capture…");
 
     try {
       const text = await transcribeBlob(blob);
-      if (!text || text.length < 3) {
-        if (isListening) setStatus("listening", "Recording all sound — speak louder on laptop");
+
+      if (!text || text.length < 2) {
+        if (isListening) setStatus("listening", "Recording — turn up laptop volume");
         return;
       }
 
-      if (isSimilarText(text, lastProcessedText)) {
-        if (isListening) setStatus("listening", "Recording — waiting for new question");
+      mergeTranscript(text);
+      updateTranscriptDisplay();
+
+      if (shouldSkipAnswer(fullTranscript)) {
+        if (isListening) setStatus("listening", "Recording — captured words, waiting for new question");
         return;
       }
 
-      setTranscript(text);
-      setStatus("processing", "Analyzing question & generating answer…");
-      await sendRawTranscript(text);
-      lastProcessedText = text;
+      setStatus("processing", "Analyzing full question & answering…");
+      await sendRawTranscript(fullTranscript);
+      lastAnsweredText = fullTranscript;
     } catch (err) {
       console.error(err);
       setStatus("error", err.message);
       setTimeout(() => {
-        if (isListening) setStatus("listening", "Still recording all sound…");
+        if (isListening) setStatus("listening", "Still recording — every word captured");
       }, 2000);
     } finally {
       isProcessing = false;
 
-      if (pendingBlob) {
-        const next = pendingBlob;
-        pendingBlob = null;
-        processSegment(next);
+      if (pendingProcess) {
+        pendingProcess = false;
+        triggerProcessWindow();
       }
     }
   }
 
-  function finalizeSegment() {
-    const blob = blobFromSegment();
-    resetSegment();
+  function triggerProcessWindow() {
+    if (!speechWindowStart) return;
 
-    if (!blob || blob.size < MIN_AUDIO_BYTES) return;
+    const endTime = Date.now();
+    const startTime = Math.max(speechWindowStart - PRE_ROLL_MS, sessionStartedAt);
+    const windowMs = endTime - startTime;
+
+    speechWindowStart = 0;
+    lastSpeechAt = 0;
+    clearFinalizeTimer();
+
+    if (windowMs < 600) return;
 
     if (isProcessing) {
-      pendingBlob = blob;
+      pendingProcess = true;
       return;
     }
 
-    processSegment(blob);
+    processWindow(startTime, endTime);
   }
 
   function checkVoiceActivity() {
@@ -273,22 +348,28 @@
     const volume = readVolume();
     const now = Date.now();
     updateMicLevel(volume);
+    trimOldChunks();
 
     if (volume > VOLUME_THRESHOLD) {
+      if (!speechWindowStart) {
+        speechWindowStart = now;
+      }
       lastSpeechAt = now;
-      heardSpeechInSegment = true;
+      clearFinalizeTimer();
+      return;
     }
 
-    if (!heardSpeechInSegment) return;
+    if (!speechWindowStart || !lastSpeechAt) return;
 
-    const silentFor = lastSpeechAt ? now - lastSpeechAt : 0;
-    const segmentAge = now - segmentStartedAt;
+    const silentFor = now - lastSpeechAt;
+    const windowAge = now - speechWindowStart;
 
-    const silenceReached = lastSpeechAt > 0 && silentFor >= settings.silenceMs;
-    const maxLengthReached = segmentAge >= MAX_SEGMENT_MS;
+    if (silentFor >= settings.silenceMs) {
+      scheduleFinalize();
+    }
 
-    if (silenceReached || maxLengthReached) {
-      finalizeSegment();
+    if (windowAge >= MAX_SEGMENT_MS) {
+      triggerProcessWindow();
     }
   }
 
@@ -303,32 +384,47 @@
         echoCancellation: false,
         noiseSuppression: false,
         autoGainControl: true,
+        channelCount: 1,
       },
     });
 
     audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioContext.state === "suspended") {
+      await audioContext.resume();
+    }
+
     analyser = audioContext.createAnalyser();
-    analyser.fftSize = 512;
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0.2;
     const source = audioContext.createMediaStreamSource(mediaStream);
     source.connect(analyser);
 
     const mimeType = getSupportedMimeType();
-    mediaRecorder = mimeType
-      ? new MediaRecorder(mediaStream, { mimeType })
+    const options = { audioBitsPerSecond: 128000 };
+    if (mimeType) options.mimeType = mimeType;
+
+    mediaRecorder = MediaRecorder.isTypeSupported(mimeType || "")
+      ? new MediaRecorder(mediaStream, options)
       : new MediaRecorder(mediaStream);
 
+    chunkLog = [];
+    sessionStartedAt = Date.now();
+    speechWindowStart = 0;
+    lastSpeechAt = 0;
+
     mediaRecorder.ondataavailable = (event) => {
-      if (event.data.size > 0) segmentChunks.push(event.data);
+      if (event.data.size > 0) {
+        chunkLog.push({ t: Date.now(), blob: event.data });
+      }
     };
 
-    resetSegment();
     mediaRecorder.start(RECORD_SLICE_MS);
 
     isListening = true;
     setMainButton(true);
     showMicMeter(true);
-    setStatus("listening", "Recording ALL sound — mic is live");
-    vadTimer = setInterval(checkVoiceActivity, 100);
+    setStatus("listening", "Recording ALL words — nothing skipped");
+    vadTimer = setInterval(checkVoiceActivity, 80);
   }
 
   function stopContinuousListening() {
@@ -337,21 +433,20 @@
       vadTimer = null;
     }
 
+    clearFinalizeTimer();
+
+    if (speechWindowStart && lastSpeechAt) {
+      triggerProcessWindow();
+    }
+
     if (mediaRecorder && mediaRecorder.state !== "inactive") {
       try {
         mediaRecorder.stop();
       } catch {}
     }
 
-    const blob = blobFromSegment();
-    if (blob && blob.size >= MIN_AUDIO_BYTES && !isProcessing) {
-      processSegment(blob);
-    } else if (blob && blob.size >= MIN_AUDIO_BYTES) {
-      pendingBlob = blob;
-    }
-
     mediaRecorder = null;
-    resetSegment();
+    chunkLog = [];
 
     if (mediaStream) {
       mediaStream.getTracks().forEach((t) => t.stop());
@@ -365,6 +460,25 @@
 
     analyser = null;
     showMicMeter(false);
+  }
+
+  async function forceProcessNow() {
+    if (!isListening || !chunkLog.length) {
+      if (fullTranscript) sendQuestion(fullTranscript);
+      return;
+    }
+
+    const endTime = Date.now();
+    const startTime = speechWindowStart
+      ? Math.max(speechWindowStart - PRE_ROLL_MS, sessionStartedAt)
+      : Math.max(endTime - 30000, sessionStartedAt);
+
+    if (isProcessing) {
+      pendingProcess = true;
+      return;
+    }
+
+    await processWindow(startTime, endTime);
   }
 
   async function sendRawTranscript(text) {
@@ -421,11 +535,11 @@
     }
 
     if (!fullAnswer.trim()) {
-      els.answer.textContent = "Could not generate answer. Tap Send Now to retry.";
+      els.answer.textContent = "Could not generate answer. Tap Process Now to retry.";
     } else if (fullAnswer.toLowerCase().includes("still listening")) {
-      setStatus("listening", "Recording — question not clear yet, keep listening");
+      setStatus("listening", "Recording — need more words, keep listening");
     } else if (isListening) {
-      setStatus("listening", "Answer ready — still recording all sound");
+      setStatus("listening", "Answer ready — still recording every word");
     }
   }
 
@@ -438,6 +552,7 @@
 
     try {
       await sendRawTranscript(text);
+      lastAnsweredText = text;
     } catch (err) {
       console.error(err);
       els.answer.textContent = "Error: " + err.message;
@@ -450,15 +565,15 @@
 
   async function startListening() {
     if (!serverReady) {
-      alert("Server not ready. Run start.bat on your laptop.");
+      alert("Server not ready. Check Vercel deploy or run start.bat locally.");
       return;
     }
 
     fullTranscript = "";
-    lastProcessedText = "";
-    pendingBlob = null;
+    lastAnsweredText = "";
+    pendingProcess = false;
     updateTranscriptDisplay();
-    els.answer.textContent = "Answer appears after AI detects a question…";
+    els.answer.textContent = "Answer appears after full question is captured…";
     els.answer.classList.add("empty");
 
     try {
@@ -493,7 +608,7 @@
   });
 
   els.askBtn.addEventListener("click", () => {
-    if (fullTranscript) sendQuestion(fullTranscript);
+    forceProcessNow();
   });
 
   els.settingsBtn.addEventListener("click", openSettings);

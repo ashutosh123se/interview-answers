@@ -46,6 +46,7 @@ export default async function handler(req, res) {
     }
 
     const language = (fields.language?.[0] || fields.language || "en").trim();
+    const prompt = (fields.prompt?.[0] || fields.prompt || "Job interview. Interviewer asks a question.").trim();
     const buffer = fs.readFileSync(audioFile.filepath);
     const blob = new Blob([buffer], { type: audioFile.mimetype || "audio/webm" });
 
@@ -53,7 +54,7 @@ export default async function handler(req, res) {
     formData.append("file", blob, audioFile.originalFilename || "recording.webm");
     formData.append("model", "whisper-1");
     formData.append("language", language);
-    formData.append("prompt", "Job interview. Interviewer asks a question.");
+    formData.append("prompt", prompt);
 
     const upstream = await fetch("https://api.openai.com/v1/audio/transcriptions", {
       method: "POST",
